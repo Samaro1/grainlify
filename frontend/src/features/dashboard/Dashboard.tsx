@@ -49,6 +49,7 @@ export function Dashboard() {
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [viewingUserId, setViewingUserId] = useState<string | null>(null);
   const [viewingUserLogin, setViewingUserLogin] = useState<string | null>(null);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabType>('profile');
 
   // Admin password gating (bootstrap token)
   const [showAdminPasswordModal, setShowAdminPasswordModal] = useState(false);
@@ -446,7 +447,15 @@ export function Dashboard() {
               />
             ) : (
               <>
-                {currentPage === 'discover' && <DiscoverPage />}
+                {currentPage === 'discover' && (
+                  <DiscoverPage
+                    onGoToBilling={() => {
+                      setSettingsInitialTab('billing');
+                      setCurrentPage('settings');
+                    }}
+                    onGoToOpenSourceWeek={() => setCurrentPage('osw')}
+                  />
+                )}
                 {currentPage === 'browse' && <BrowsePage onProjectClick={(id) => setSelectedProjectId(id)} />}
                 {currentPage === 'osw' && !selectedEventId && (
                   <OpenSourceWeekPage onEventClick={(id, name) => {
@@ -497,7 +506,7 @@ export function Dashboard() {
                 {currentPage === 'data' && adminAuthenticated && <DataPage />}
                 {currentPage === 'leaderboard' && <LeaderboardPage />}
                 {currentPage === 'blog' && <BlogPage />}
-                {currentPage === 'settings' && <SettingsPage />}
+                {currentPage === 'settings' && <SettingsPage initialTab={settingsInitialTab} />}
                 {currentPage === 'admin' && adminAuthenticated && <AdminPage />}
                 {currentPage === 'admin' && !adminAuthenticated && (
                   <div className="flex items-center justify-center min-h-[60vh]">

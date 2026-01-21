@@ -122,7 +122,12 @@ const getPrimaryTag = (labels: any[]): string | undefined => {
   return undefined;
 };
 
-export function DiscoverPage() {
+interface DiscoverPageProps {
+  onGoToBilling?: () => void;
+  onGoToOpenSourceWeek?: () => void;
+}
+
+export function DiscoverPage({ onGoToBilling, onGoToOpenSourceWeek }: DiscoverPageProps) {
   const { theme } = useTheme();
   const [selectedIssue, setSelectedIssue] = useState<{ issueId: string; projectId?: string } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -302,15 +307,21 @@ export function DiscoverPage() {
         <p className={`text-[16px] mb-8 max-w-2xl mx-auto transition-colors ${
           theme === 'dark' ? 'text-[#d4d4d4]' : 'text-[#7a6b5a]'
         }`}>
-          Get recommendations based on your profile and past contributions.
+          Get matched automatically once you add your billing profile and verify your KYC so we can route rewards on-chain.
         </p>
-        <button className="px-8 py-4 rounded-[16px] bg-gradient-to-br from-[#c9983a] to-[#a67c2e] text-white font-semibold text-[16px] shadow-[0_6px_24px_rgba(162,121,44,0.4)] hover:shadow-[0_8px_28px_rgba(162,121,44,0.5)] transition-all inline-flex items-center space-x-2 border border-white/10">
-          <span>You didn't link your wallet (1/3)</span>
+        <button
+          onClick={onGoToBilling}
+          disabled={!onGoToBilling}
+          className={`px-8 py-4 rounded-[16px] bg-gradient-to-br from-[#c9983a] to-[#a67c2e] text-white font-semibold text-[16px] shadow-[0_6px_24px_rgba(162,121,44,0.4)] hover:shadow-[0_8px_28px_rgba(162,121,44,0.5)] transition-all inline-flex items-center space-x-2 border border-white/10 ${
+            !onGoToBilling ? 'opacity-70 cursor-default' : ''
+          }`}
+        >
+          <span>Add billing profile & verify KYC (1/3)</span>
           <ArrowUpRight className="w-5 h-5" />
         </button>
       </div>
 
-      {/* Embark on ODQuest */}
+      {/* Embark on GrainHack */}
       <div className={`backdrop-blur-[40px] rounded-[24px] border shadow-[0_8px_32px_rgba(0,0,0,0.08)] p-8 transition-colors ${
         theme === 'dark'
           ? 'bg-gradient-to-br from-white/[0.1] to-white/[0.06] border-white/15'
@@ -321,14 +332,20 @@ export function DiscoverPage() {
             <h3 className={`text-[28px] font-bold mb-2 transition-colors ${
               theme === 'dark' ? 'text-[#f5f5f5]' : 'text-[#2d2820]'
             }`}>
-              Embark on an <span className="text-[#c9983a]">ODQuest</span>
+              Join the <span className="text-[#c9983a]">GrainHack</span>
             </h3>
             <p className={`text-[16px] mb-6 transition-colors ${
               theme === 'dark' ? 'text-[#d4d4d4]' : 'text-[#7a6b5a]'
             }`}>
-              Learn about the ecosystem onboarding quest and track your progress directly on our onboarding Quest
+              Join our GrainHack week and track your Open Source Week progress directly from your dashboard.
             </p>
-            <button className="px-6 py-3 rounded-[14px] bg-gradient-to-br from-[#c9983a] to-[#a67c2e] text-white font-semibold text-[14px] shadow-[0_6px_20px_rgba(162,121,44,0.35)] hover:shadow-[0_8px_24px_rgba(162,121,44,0.4)] transition-all border border-white/10">
+            <button
+              onClick={onGoToOpenSourceWeek}
+              disabled={!onGoToOpenSourceWeek}
+              className={`px-6 py-3 rounded-[14px] bg-gradient-to-br from-[#c9983a] to-[#a67c2e] text-white font-semibold text-[14px] shadow-[0_6px_20px_rgba(162,121,44,0.35)] hover:shadow-[0_8px_24px_rgba(162,121,44,0.4)] transition-all border border-white/10 ${
+                !onGoToOpenSourceWeek ? 'opacity-70 cursor-default' : ''
+              }`}
+            >
               Let's go
             </button>
           </div>

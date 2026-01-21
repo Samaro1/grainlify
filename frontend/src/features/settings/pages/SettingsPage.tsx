@@ -8,8 +8,12 @@ import { TermsTab } from '../components/terms/TermsTab';
 import { useTheme } from '../../../shared/contexts/ThemeContext';
 import { BillingProfilesProvider } from '../contexts/BillingProfilesContext';
 
-export function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<SettingsTabType>('profile');
+interface SettingsPageProps {
+  initialTab?: SettingsTabType;
+}
+
+export function SettingsPage({ initialTab = 'profile' }: SettingsPageProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTabType>(initialTab);
   const { theme } = useTheme();
 
   const tabs: { id: SettingsTabType; label: string }[] = [

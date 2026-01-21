@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTheme } from '../../../shared/contexts/ThemeContext';
 import { Calendar } from 'lucide-react';
 import { getOpenSourceWeekEvents } from '../../../shared/api/client';
