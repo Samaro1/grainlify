@@ -937,7 +937,7 @@ impl BountyEscrowContract {
         // );
 
         // Initialize RBAC: grant Admin role to the initial admin
-        rbac::grant_role(&env, admin.clone(), rbac::Role::Admin, admin.clone());
+        rbac::grant_role(&env, &admin, &rbac::Role::Admin, &admin);
 
         // Emit initialization event
         _emit_bounty_initialized(
@@ -1183,20 +1183,24 @@ impl BountyEscrowContract {
         admin.require_auth();
 
         // Verify caller is admin via RBAC
-        if !rbac::has_role(&env, admin.clone(), rbac::Role::Admin) {
+        if !rbac::has_role(&env, &admin, &rbac::Role::Admin) {
             return Err(Error::Unauthorized);
         }
 
-        // Parse role name
-        let role = match role_name.as_str() {
-            "admin" => rbac::Role::Admin,
-            "operator" => rbac::Role::Operator,
-            "pauser" => rbac::Role::Pauser,
-            "viewer" => rbac::Role::Viewer,
-            _ => return Err(Error::InvalidAmount), // Reuse error code
+        // Parse role name - compare Soroban Strings
+        let role = if role_name == String::from_slice(&env, "admin") {
+            rbac::Role::Admin
+        } else if role_name == String::from_slice(&env, "operator") {
+            rbac::Role::Operator
+        } else if role_name == String::from_slice(&env, "pauser") {
+            rbac::Role::Pauser
+        } else if role_name == String::from_slice(&env, "viewer") {
+            rbac::Role::Viewer
+        } else {
+            return Err(Error::InvalidAmount); // Reuse error code
         };
 
-        rbac::grant_role(&env, address, role, admin);
+        rbac::grant_role(&env, &address, &role, &admin);
         Ok(())
     }
 
@@ -1222,20 +1226,24 @@ impl BountyEscrowContract {
         admin.require_auth();
 
         // Verify caller is admin via RBAC
-        if !rbac::has_role(&env, admin.clone(), rbac::Role::Admin) {
+        if !rbac::has_role(&env, &admin, &rbac::Role::Admin) {
             return Err(Error::Unauthorized);
         }
 
-        // Parse role name
-        let role = match role_name.as_str() {
-            "admin" => rbac::Role::Admin,
-            "operator" => rbac::Role::Operator,
-            "pauser" => rbac::Role::Pauser,
-            "viewer" => rbac::Role::Viewer,
-            _ => return Err(Error::InvalidAmount),
+        // Parse role name - compare Soroban Strings
+        let role = if role_name == String::from_slice(&env, "admin") {
+            rbac::Role::Admin
+        } else if role_name == String::from_slice(&env, "operator") {
+            rbac::Role::Operator
+        } else if role_name == String::from_slice(&env, "pauser") {
+            rbac::Role::Pauser
+        } else if role_name == String::from_slice(&env, "viewer") {
+            rbac::Role::Viewer
+        } else {
+            return Err(Error::InvalidAmount)
         };
 
-        rbac::revoke_role(&env, address, role);
+        rbac::revoke_role(&env, &address, &role);
         Ok(())
     }
 
@@ -1249,15 +1257,19 @@ impl BountyEscrowContract {
     /// # Returns
     /// `true` if address has the role
     pub fn has_role(env: Env, address: Address, role_name: String) -> bool {
-        let role = match role_name.as_str() {
-            "admin" => rbac::Role::Admin,
-            "operator" => rbac::Role::Operator,
-            "pauser" => rbac::Role::Pauser,
-            "viewer" => rbac::Role::Viewer,
-            _ => return false,
+        let role = if role_name == String::from_slice(&env, "admin") {
+            rbac::Role::Admin
+        } else if role_name == String::from_slice(&env, "operator") {
+            rbac::Role::Operator
+        } else if role_name == String::from_slice(&env, "pauser") {
+            rbac::Role::Pauser
+        } else if role_name == String::from_slice(&env, "viewer") {
+            rbac::Role::Viewer
+        } else {
+            return false
         };
 
-        rbac::has_role(&env, address, role)
+        rbac::has_role(&env, &address, &role)
     }
 
 

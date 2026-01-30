@@ -36,7 +36,7 @@ impl Role {
 
 pub const ROLE_STORAGE_KEY: &str = "rbac_roles";
 
-pub fn grant_role(env: &Env, address: Address, role: Role, _granted_by: Address) {
+pub fn grant_role(env: &Env, address: &Address, role: &Role, _granted_by: &Address) {
     let mut roles: Map<Address, Map<Symbol, bool>> = env
         .storage()
         .instance()
@@ -47,13 +47,13 @@ pub fn grant_role(env: &Env, address: Address, role: Role, _granted_by: Address)
     let role_symbol = Symbol::new(env, role.as_str());
     address_roles.set(role_symbol, true);
 
-    roles.set(address, address_roles);
+    roles.set(address.clone(), address_roles);
     env.storage()
         .instance()
         .set(&Symbol::new(env, ROLE_STORAGE_KEY), &roles);
 }
 
-pub fn revoke_role(env: &Env, address: Address, role: Role) {
+pub fn revoke_role(env: &Env, address: &Address, role: &Role) {
     let mut roles: Map<Address, Map<Symbol, bool>> = env
         .storage()
         .instance()
@@ -65,9 +65,9 @@ pub fn revoke_role(env: &Env, address: Address, role: Role) {
         address_roles.remove(role_symbol);
         
         if address_roles.len() > 0 {
-            roles.set(address, address_roles);
+            roles.set(address.clone(), address_roles);
         } else {
-            roles.remove(address);
+            roles.remove(address.clone());
         }
         
         env.storage()
@@ -76,14 +76,14 @@ pub fn revoke_role(env: &Env, address: Address, role: Role) {
     }
 }
 
-pub fn has_role(env: &Env, address: Address, role: Role) -> bool {
+pub fn has_role(env: &Env, address: &Address, role: &Role) -> bool {
     let roles: Map<Address, Map<Symbol, bool>> = env
         .storage()
         .instance()
         .get(&Symbol::new(env, ROLE_STORAGE_KEY))
         .unwrap_or_else(|| Map::new(env));
 
-    if let Some(address_roles) = roles.get(address) {
+    if let Some(address_roles) = roles.get(address.clone()) {
         let role_symbol = Symbol::new(env, role.as_str());
         address_roles.get(role_symbol).unwrap_or(false)
     } else {
@@ -91,22 +91,22 @@ pub fn has_role(env: &Env, address: Address, role: Role) -> bool {
     }
 }
 
-pub fn require_admin(env: &Env, caller: Address) {
-    if !has_role(env, caller, Role::Admin) {
+pub fn require_admin(env: &Env, caller: &Address) {
+    if !has_role(env, caller, &Role::Admin) {
         panic!("Unauthorized: Admin role required");
     }
 }
 
-pub fn require_role(env: &Env, caller: Address, role: Role) {
+pub fn require_role(env: &Env, caller: &Address, role: &Role) {
     if !has_role(env, caller, role) {
         panic!("Unauthorized: role required");
     }
 }
 
-pub fn is_operator(env: &Env, address: Address) -> bool {
-    has_role(env, address, Role::Admin) || has_role(env, address, Role::Operator)
+pub fn is_operator(env: &Env, address: &Address) -> bool {
+    has_role(env, address, &Role::Admin) || has_role(env, address, &Role::Operator)
 }
 
-pub fn can_pause(env: &Env, address: Address) -> bool {
-    has_role(env, address, Role::Admin) || has_role(env, address, Role::Pauser)
+pub fn can_pause(env: &Env, address: &Address) -> bool {
+    has_role(env, address, &Role::Admin) || has_role(env, address, &Role::Pauser)
 }

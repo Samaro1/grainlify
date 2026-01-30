@@ -969,7 +969,7 @@ impl ProgramEscrowContract {
         env.storage().instance().set(&FEE_CONFIG, &fee_config);
 
         // Initialize RBAC: grant Admin role to the authorized payout key
-        rbac::grant_role(&env, authorized_payout_key.clone(), rbac::Role::Admin, authorized_payout_key.clone());
+        rbac::grant_role(&env, &authorized_payout_key, &rbac::Role::Admin, &authorized_payout_key);
 
         // Store program data
         env.storage().instance().set(&program_key, &program_data);
