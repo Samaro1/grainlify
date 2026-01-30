@@ -46,7 +46,7 @@ export function PayoutTab() {
 
   const handleSave = () => {
     // TODO: Implement save to backend
-    console.log('Saving payout preferences:', projectMappings);
+    // console.log('Saving payout preferences:', projectMappings);
   };
 
   const getProjectInitial = (fullName: string) => {

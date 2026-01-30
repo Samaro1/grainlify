@@ -65,7 +65,7 @@ export function NotificationsDropdown({
         ]);
         
       } catch (error) {
-        console.error("Failed to fetch notifications:", error);
+        // console.error("Failed to fetch notifications:", error);
       }
     };
 
