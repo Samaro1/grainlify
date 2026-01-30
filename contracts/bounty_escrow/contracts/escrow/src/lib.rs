@@ -87,6 +87,8 @@
 //! ```
 
 #![no_std]
+#[cfg(test)]
+mod invariants;
 mod events;
 mod indexed;
 mod test_bounty_escrow;
@@ -101,8 +103,8 @@ use indexed::{
     BountyEscrowInitialized,
 };
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
-    Map, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, String, Env,
+    Vec, Map,
 };
 
 // ==================== MONITORING MODULE ====================
@@ -695,6 +697,7 @@ const MAX_FEE_RATE: i128 = 1_000; // Maximum 10% fee
 pub enum DataKey {
     Admin,
     Token,
+    EscrowMetadata(u64),
     Escrow(u64),         // bounty_id
     EscrowMetadata(u64), // bounty_id -> EscrowMetadata
     FeeConfig,           // Fee configuration
@@ -2375,6 +2378,31 @@ impl BountyEscrowContract {
         Ok(released_count)
     }
 }
+
+
+fn validate_metadata_size(_env: &Env, metadata: &EscrowMetadata) -> bool {
+    let mut size: u32 = 0;
+
+    if let Some(v) = &metadata.bounty_type {
+        size += v.len();
+    }
+
+    if let Some(v) = &metadata.repo_id {
+        size += v.len();
+    }
+
+    if let Some(v) = &metadata.issue_id {
+        size += v.len();
+    }
+
+    for (k, v) in metadata.custom_fields.iter() {
+        size += k.len();
+        size += v.len();
+    }
+
+    size <= 2048
+}
+
 
 #[cfg(test)]
 mod test;
