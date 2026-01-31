@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   Search,
   Compass,
@@ -50,7 +49,6 @@ import { SettingsTabType } from "../settings/types";
 export function Dashboard() {
   const { login } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const navigate = useNavigate();
   // const [currentPage, setCurrentPage] = useState('discover');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null,
@@ -120,27 +118,21 @@ export function Dashboard() {
     const userParam = params.get("user");
     const pageParam = params.get("page");
 
-    if (pageParam === "profile") {
+    if (pageParam === "profile" && userParam) {
       setCurrentPage("profile");
-
-      if (userParam) {
-        // Viewing someone else's profile
-        const uuidRegex =
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (uuidRegex.test(userParam)) {
-          setViewingUserId(userParam);
-          setViewingUserLogin(null);
-        } else {
-          setViewingUserLogin(userParam);
-          setViewingUserId(null);
-        }
-      } else {
-        // No user param = viewing own profile
-        setViewingUserId(null);
+      // Check if it's a UUID (user_id) or a username (login)
+      const uuidRegex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (uuidRegex.test(userParam)) {
+        setViewingUserId(userParam);
         setViewingUserLogin(null);
+      } else {
+        setViewingUserLogin(userParam);
+        setViewingUserId(null);
       }
     }
-  }, [window.location.search]); // React to URL changes
+  }, []);
+
   // *******************************
   useEffect(() => {
     // Save tab in URL + localStorage whenever it changes
@@ -294,7 +286,7 @@ export function Dashboard() {
       {/* Mobile Sidebar Overlay Backdrop */}
       {isMobile && mobileMenuOpen && (
         <div
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] transition-opacity duration-300"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] transition-opacity duration-300 animate-in fade-in"
           onClick={() => setMobileMenuOpen(false)}
         />
       )}
@@ -338,6 +330,20 @@ export function Dashboard() {
               : "bg-white/[0.35] border-white/20"
           }`}
         >
+          {/* Mobile Close Button */}
+          {isMobile && (
+            <button
+              onClick={() => setMobileMenuOpen(false)}
+              className={`absolute top-4 right-4 p-2 rounded-full transition-colors z-50 ${
+                darkTheme
+                  ? "bg-white/5 hover:bg-white/10"
+                  : "bg-black/5 hover:bg-black/10"
+              }`}
+            >
+              <X className="w-5 h-5 text-[#c9983a]" />
+            </button>
+          )}
+
           <div className="flex flex-col h-full px-0 py-[40px]">
             {/* Logo/Avatar */}
             <div
@@ -465,12 +471,15 @@ export function Dashboard() {
             {/* Menu button on the far left for mobile */}
             {isMobile && (
               <button
-                className={`lg:hidden transition-colors ml-4 mr-2 ${
-                  theme === "dark" ? "text-[#e8dfd0]" : "text-[#2d2820]"
+                className={`lg:hidden transition-all ml-4 mr-2 p-2 rounded-xl border ${
+                  darkTheme
+                    ? "text-[#e8dfd0] bg-white/5 border-white/10 hover:bg-white/10"
+                    : "text-[#2d2820] bg-black/5 border-black/10 hover:bg-black/10"
                 }`}
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                aria-label="Toggle navigation"
               >
-                {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+                {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
               </button>
             )}
 
@@ -765,7 +774,7 @@ export function Dashboard() {
                       setSelectedProjectId(id);
                       setCurrentPage("discover");
                     }}
-                    onContributorClick={(id) => {
+                    onContributorClick={() => {
                       // Navigate to profile page or contributors page with selected contributor
                       setCurrentPage("contributors");
                     }}
