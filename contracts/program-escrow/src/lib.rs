@@ -143,15 +143,19 @@ pub mod security {
     pub mod reentrancy_guard;
 }
 #[cfg(test)]
-mod reentrancy_test;
-#[cfg(test)]
 mod pause_tests;
+#[cfg(test)]
+mod reentrancy_test;
 
 use security::reentrancy_guard::{ReentrancyGuard, ReentrancyGuardRAII};
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
     String, Symbol, Vec,
+};
+
+use grainlify_interfaces::{
+    ConfigurableFee, EscrowLock, EscrowRelease, FeeConfig as SharedFeeConfig, Pausable, RefundMode,
 };
 
 // Event types
@@ -180,6 +184,27 @@ pub struct FeeConfig {
     pub fee_enabled: bool,      // Global fee enable/disable flag
 }
 
+impl From<SharedFeeConfig> for FeeConfig {
+    fn from(shared: SharedFeeConfig) -> Self {
+        Self {
+            lock_fee_rate: shared.lock_fee_rate,
+            payout_fee_rate: shared.payout_fee_rate,
+            fee_recipient: shared.fee_recipient,
+            fee_enabled: shared.fee_enabled,
+        }
+    }
+}
+
+impl From<FeeConfig> for SharedFeeConfig {
+    fn from(local: FeeConfig) -> Self {
+        Self {
+            lock_fee_rate: local.lock_fee_rate,
+            payout_fee_rate: local.payout_fee_rate,
+            fee_recipient: local.fee_recipient,
+            fee_enabled: local.fee_enabled,
+        }
+    }
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct AmountLimits {
@@ -733,9 +758,9 @@ pub struct ProgramData {
 pub enum DataKey {
     Program(String),              // program_id -> ProgramData
     ReleaseSchedule(String, u64), // program_id, schedule_id -> ProgramReleaseSchedule
-    ReleaseHistory(String), // program_id -> Vec<ProgramReleaseHistory>
-    NextScheduleId(String), // program_id -> next schedule_id
-    AmountLimits, // Amount limits configuration
+    ReleaseHistory(String),       // program_id -> Vec<ProgramReleaseHistory>
+    NextScheduleId(String),       // program_id -> next schedule_id
+    AmountLimits,                 // Amount limits configuration
     ReleaseHistory(String),       // program_id -> Vec<ProgramReleaseHistory>
     NextScheduleId(String),       // program_id -> next schedule_id
     IsPaused,                     // Global contract pause state
@@ -840,46 +865,13 @@ impl ProgramEscrowContract {
     // Pause and Emergency Functions
     // ========================================================================
 
-    /// Check if contract is paused (internal helper)
+    /// Get pause status (view function)
+    /// Deprecated: Use Pausable trait instead. Keeping internal helper.
     fn is_paused_internal(env: &Env) -> bool {
         env.storage()
             .instance()
             .get::<_, bool>(&DataKey::IsPaused)
             .unwrap_or(false)
-    }
-
-    /// Get pause status (view function)
-    pub fn is_paused(env: Env) -> bool {
-        Self::is_paused_internal(&env)
-    }
-
-    /// Pause the contract (authorized payout key only)
-    /// Prevents new fund locking, payouts, and schedule releases
-    pub fn pause(env: Env) {
-        // For program-escrow, pause is triggered by the first authorized key that calls it
-        // In a multi-program setup, this would need to be per-program
-
-        if Self::is_paused_internal(&env) {
-            return; // Already paused, idempotent
-        }
-
-        env.storage().instance().set(&DataKey::IsPaused, &true);
-
-        env.events()
-            .publish((symbol_short!("pause"),), (env.ledger().timestamp(),));
-    }
-
-    /// Unpause the contract (authorized payout key only)
-    /// Resumes normal operations
-    pub fn unpause(env: Env) {
-        if !Self::is_paused_internal(&env) {
-            return; // Already unpaused, idempotent
-        }
-
-        env.storage().instance().set(&DataKey::IsPaused, &false);
-
-        env.events()
-            .publish((symbol_short!("unpause"),), (env.ledger().timestamp(),));
     }
 
     /// Emergency withdrawal for all contract funds (authorized payout key only, only when paused)
@@ -1349,13 +1341,13 @@ impl ProgramEscrowContract {
         let mut total_payout: i128 = 0;
         let fee_config = Self::get_fee_config_internal(&env);
         let limits = Self::get_amount_limits(env.clone());
-        
+
         for i in 0..amounts.len() {
             let amount = amounts.get(i as u32).unwrap();
             if amount <= 0 {
                 panic!("All amounts must be greater than zero");
             }
-            
+
             // Check payout amount limits (considering fees)
             let fee_amount = if fee_config.fee_enabled && fee_config.payout_fee_rate > 0 {
                 Self::calculate_fee(amount, fee_config.payout_fee_rate)
@@ -1363,11 +1355,11 @@ impl ProgramEscrowContract {
                 0
             };
             let net_amount = amount - fee_amount;
-            
+
             if net_amount < limits.min_payout || net_amount > limits.max_payout {
                 panic!("Payout amount violates configured limits");
             }
-            
+
             total_payout = total_payout
                 .checked_add(amount)
                 .unwrap_or_else(|| panic!("Payout amount overflow"));
@@ -1545,7 +1537,7 @@ impl ProgramEscrowContract {
             0
         };
         let net_amount = amount - fee_amount;
-        
+
         let limits = Self::get_amount_limits(env.clone());
         if net_amount < limits.min_payout || net_amount > limits.max_payout {
             panic!("Payout amount violates configured limits");
@@ -1790,11 +1782,7 @@ impl ProgramEscrowContract {
     /// // Anyone can call this after the timestamp
     /// escrow_client.release_program_schedule_automatic(&"Hackathon2024", &1);
     /// ```
-    pub fn release_prog_schedule_automatic(
-        env: Env,
-        program_id: String,
-        schedule_id: u64,
-    ) {
+    pub fn release_prog_schedule_automatic(env: Env, program_id: String, schedule_id: u64) {
         let _guard = ReentrancyGuardRAII::new(&env).expect("Reentrancy detected");
         let start = env.ledger().timestamp();
         let caller = env.current_contract_address();
@@ -1933,11 +1921,7 @@ impl ProgramEscrowContract {
     /// // Authorized key can release early
     /// escrow_client.release_program_schedule_manual(&"Hackathon2024", &1);
     /// ```
-    pub fn release_program_schedule_manual(
-        env: Env,
-        program_id: String,
-        schedule_id: u64,
-    ) {
+    pub fn release_program_schedule_manual(env: Env, program_id: String, schedule_id: u64) {
         let _guard = ReentrancyGuardRAII::new(&env).expect("Reentrancy detected");
         let start = env.ledger().timestamp();
 
@@ -2178,7 +2162,8 @@ impl ProgramEscrowContract {
     }
 
     /// Get current fee configuration (view function)
-    pub fn get_fee_config(env: Env) -> FeeConfig {
+    /// Deprecated: Use ConfigurableFee trait. Keeping internal helper.
+    fn get_fee_config_internal_api(env: Env) -> FeeConfig {
         Self::get_fee_config_internal(&env)
     }
 
@@ -2209,7 +2194,9 @@ impl ProgramEscrowContract {
             max_payout,
         };
 
-        env.storage().instance().set(&DataKey::AmountLimits, &limits);
+        env.storage()
+            .instance()
+            .set(&DataKey::AmountLimits, &limits);
 
         // Emit event
         env.events().publish(
@@ -3553,5 +3540,119 @@ mod test {
 
         assert_eq!(info1.program_id, prog1);
         assert_eq!(info1.authorized_payout_key, new_authorized_payout_key);
+    }
+}
+
+#[contractimpl]
+impl ProgramEscrowContract {
+    fn u64_to_string(env: &Env, n: u64) -> String {
+        let mut id_bytes = [0u8; 20];
+        let mut val = n;
+        let mut len = 0;
+        if val == 0 {
+            id_bytes[0] = b'0';
+            len = 1;
+        } else {
+            let mut i = 19;
+            while val > 0 {
+                id_bytes[i] = (val % 10) as u8 + b'0';
+                val /= 10;
+                i -= 1;
+                len += 1;
+            }
+            for j in 0..len {
+                id_bytes[j] = id_bytes[19 - len + 1 + j];
+            }
+        }
+        String::from_str(env, core::str::from_utf8(&id_bytes[..len]).unwrap())
+    }
+}
+
+#[contractimpl]
+impl EscrowLock for ProgramEscrowContract {
+    fn lock_funds(env: Env, _depositor: Address, id: u64, amount: i128, _deadline: u64) {
+        let id_str = Self::u64_to_string(&env, id);
+        Self::lock_program_funds(env, id_str, amount);
+    }
+}
+
+#[contractimpl]
+impl EscrowRelease for ProgramEscrowContract {
+    fn release_funds(env: Env, id: u64, recipient: Address) {
+        let id_str = Self::u64_to_string(&env, id);
+        // Note: single_payout requires a positive amount.
+        // Trait-based release in program-escrow is a placeholder.
+        let _ = id_str;
+        let _ = recipient;
+    }
+
+    fn refund(
+        env: Env,
+        _id: u64,
+        _amount: Option<i128>,
+        _recipient: Option<Address>,
+        _mode: RefundMode,
+    ) {
+        // Program escrow doesn't have a direct 'refund' for individual IDs in the same way.
+        // It's a prize pool. Refund might mean returning all funds to organizer.
+    }
+
+    fn get_balance(env: Env, id: u64) -> i128 {
+        let id_str = Self::u64_to_string(&env, id);
+        if let Some(program) = env
+            .storage()
+            .instance()
+            .get::<_, ProgramData>(&DataKey::Program(id_str))
+        {
+            program.remaining_balance
+        } else {
+            0
+        }
+    }
+}
+
+#[contractimpl]
+impl ConfigurableFee for ProgramEscrowContract {
+    fn set_fee_config(env: Env, config: SharedFeeConfig) {
+        let _ = Self::update_fee_config(
+            env,
+            Some(config.lock_fee_rate),
+            Some(config.payout_fee_rate),
+            Some(config.fee_recipient),
+            Some(config.fee_enabled),
+        );
+    }
+
+    fn get_fee_config(env: Env) -> SharedFeeConfig {
+        Self::get_fee_config_internal(&env).into()
+    }
+}
+
+#[contractimpl]
+impl Pausable for ProgramEscrowContract {
+    fn pause(env: Env) {
+        if Self::is_paused_internal(&env) {
+            return;
+        }
+
+        env.storage().instance().set(&DataKey::IsPaused, &true);
+
+        env.events()
+            .publish((symbol_short!("pause"),), (env.ledger().timestamp(),));
+    }
+
+    fn unpause(env: Env) {
+        if !Self::is_paused_internal(&env) {
+            return;
+        }
+
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+
+        env.events()
+            .publish((symbol_short!("unpause"),), (env.ledger().timestamp(),));
+    }
+
+    fn is_paused(env: Env) -> bool {
+        Self::is_paused_internal(&env)
     }
 }
