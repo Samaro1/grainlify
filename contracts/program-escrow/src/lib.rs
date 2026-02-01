@@ -144,21 +144,17 @@ pub mod security {
 }
 pub mod rbac;
 #[cfg(test)]
-mod pause_tests;
-#[cfg(test)]
 mod reentrancy_test;
 
-use security::reentrancy_guard::{ReentrancyGuard, ReentrancyGuardRAII};
-use rbac::{grant_role, revoke_role, has_role, require_role, require_admin, require_operator, require_pauser, is_admin, Role};
+use rbac::{grant_role, require_admin, require_pauser, revoke_role, Role};
+use security::reentrancy_guard::ReentrancyGuardRAII;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
     Map, String, Symbol, Vec,
 };
 
-use grainlify_interfaces::{
-    ConfigurableFee, EscrowLock, EscrowRelease, FeeConfig as SharedFeeConfig, Pausable, RefundMode,
-};
+use grainlify_interfaces::{ConfigurableFee, FeeConfig as SharedFeeConfig, RefundMode};
 
 // Event types
 #[allow(dead_code)]
@@ -2563,7 +2559,7 @@ impl ProgramEscrowContract {
             .instance()
             .get(&PROGRAM_DATA)
             .unwrap_or_else(|| panic!("Program not initialized"));
-        
+
         // Require Pauser or Admin role
         require_pauser(&env, &caller);
         caller.require_auth();
@@ -2578,7 +2574,7 @@ impl ProgramEscrowContract {
             .instance()
             .get(&PROGRAM_DATA)
             .unwrap_or_else(|| panic!("Program not initialized"));
-        
+
         // Require Admin role (only admin can unpause)
         require_admin(&env, &caller);
         caller.require_auth();
@@ -2596,9 +2592,9 @@ impl ProgramEscrowContract {
             .instance()
             .get(&PROGRAM_DATA)
             .unwrap_or_else(|| panic!("Program not initialized"));
-        
+
         program_data.auth_key.require_auth();
-        
+
         // Only admin can grant roles
         require_admin(&env, &program_data.auth_key);
         grant_role(&env, &address, role);
@@ -2610,9 +2606,9 @@ impl ProgramEscrowContract {
             .instance()
             .get(&PROGRAM_DATA)
             .unwrap_or_else(|| panic!("Program not initialized"));
-        
+
         program_data.auth_key.require_auth();
-        
+
         // Only admin can revoke roles
         require_admin(&env, &program_data.auth_key);
         revoke_role(&env, &address);

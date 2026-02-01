@@ -3,7 +3,7 @@
 //! Provides role definitions and enforcement for the Program Escrow contract.
 //! Supports multiple roles: Admin, Operator, Pauser, and Viewer.
 
-use soroban_sdk::{symbol_short, Address, Env, Map, String, Symbol, contracttype};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, Symbol};
 
 /// Role definitions for RBAC
 #[contracttype]
@@ -37,7 +37,7 @@ impl Role {
     }
 
     /// Parse role from string
-    pub fn from_str(env: &Env, s: &str) -> Option<Self> {
+    pub fn from_str(_env: &Env, s: &str) -> Option<Self> {
         match s {
             "Admin" => Some(Role::Admin),
             "Operator" => Some(Role::Operator),
