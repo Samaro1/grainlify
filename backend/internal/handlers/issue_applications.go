@@ -274,4 +274,389 @@ WHERE project_id = $1 AND number = $2
 	}
 }
 
+type withdrawRequest struct {
+	CommentID int64 `json:"comment_id"`
+}
+
+// Withdraw removes the applicant's application by deleting their GitHub comment. Only the comment author can withdraw.
+func (h *IssueApplicationsHandler) Withdraw() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if h.db == nil || h.db.Pool == nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "db_not_configured"})
+		}
+		if strings.TrimSpace(h.cfg.TokenEncKeyB64) == "" {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "token_encryption_not_configured"})
+		}
+
+		projectID, err := uuid.Parse(c.Params("id"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_project_id"})
+		}
+		issueNumber, err := c.ParamsInt("number")
+		if err != nil || issueNumber <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_issue_number"})
+		}
+
+		userIDStr, _ := c.Locals(auth.LocalUserID).(string)
+		userID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid_user"})
+		}
+
+		var req withdrawRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_body"})
+		}
+		if req.CommentID <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "comment_id_required"})
+		}
+
+		linked, err := github.GetLinkedAccount(c.Context(), h.db.Pool, userID, h.cfg.TokenEncKeyB64)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "github_not_linked"})
+		}
+
+		var fullName string
+		if err := h.db.Pool.QueryRow(c.Context(), `
+SELECT p.github_full_name FROM projects p
+JOIN github_issues gi ON gi.project_id = p.id
+WHERE p.id = $1 AND p.status = 'verified' AND p.deleted_at IS NULL AND gi.number = $2
+`, projectID, issueNumber).Scan(&fullName); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "issue_not_found"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "project_lookup_failed"})
+		}
+
+		gh := github.NewClient()
+		if err := gh.DeleteIssueComment(c.Context(), linked.AccessToken, fullName, req.CommentID); err != nil {
+			slog.Warn("failed to delete github comment for withdraw",
+				"project_id", projectID.String(), "issue_number", issueNumber, "comment_id", req.CommentID,
+				"user_id", userID.String(), "error", err)
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "github_comment_delete_failed"})
+		}
+
+		_, _ = h.db.Pool.Exec(c.Context(), `
+UPDATE github_issues
+SET comments = (
+  SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+  FROM jsonb_array_elements(COALESCE(comments, '[]'::jsonb)) AS elem
+  WHERE (elem->>'id')::bigint != $3
+),
+comments_count = GREATEST(0, COALESCE(comments_count, 0) - 1),
+last_seen_at = now()
+WHERE project_id = $1 AND number = $2
+`, projectID, issueNumber, req.CommentID)
+
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
+	}
+}
+
+type assignRequest struct {
+	Assignee string `json:"assignee"`
+}
+
+// Assign adds the applicant as assignee on GitHub and posts a congratulations bot comment. Maintainer only.
+func (h *IssueApplicationsHandler) Assign() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if h.db == nil || h.db.Pool == nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "db_not_configured"})
+		}
+		if strings.TrimSpace(h.cfg.GitHubAppID) == "" || strings.TrimSpace(h.cfg.GitHubAppPrivateKey) == "" {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "github_app_not_configured"})
+		}
+
+		projectID, err := uuid.Parse(c.Params("id"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_project_id"})
+		}
+		issueNumber, err := c.ParamsInt("number")
+		if err != nil || issueNumber <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_issue_number"})
+		}
+
+		userIDStr, _ := c.Locals(auth.LocalUserID).(string)
+		userID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid_user"})
+		}
+		role, _ := c.Locals(auth.LocalRole).(string)
+
+		var req assignRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_body"})
+		}
+		req.Assignee = strings.TrimSpace(req.Assignee)
+		if req.Assignee == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "assignee_required"})
+		}
+
+		var owner uuid.UUID
+		var fullName, installationID string
+		err = h.db.Pool.QueryRow(c.Context(), `
+SELECT owner_user_id, github_full_name, COALESCE(github_app_installation_id, '')
+FROM projects
+WHERE id = $1 AND status = 'verified' AND deleted_at IS NULL
+`, projectID).Scan(&owner, &fullName, &installationID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "project_not_found"})
+		}
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "project_lookup_failed"})
+		}
+		if owner != userID && role != "admin" {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+		}
+		if installationID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "project_has_no_github_app_installation"})
+		}
+
+		appClient, err := github.NewGitHubAppClient(h.cfg.GitHubAppID, h.cfg.GitHubAppPrivateKey)
+		if err != nil {
+			slog.Error("failed to create GitHub App client for assign", "error", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "github_app_client_failed"})
+		}
+		token, err := appClient.GetInstallationToken(c.Context(), installationID)
+		if err != nil {
+			slog.Warn("failed to get installation token for assign", "project_id", projectID.String(), "error", err)
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "installation_token_failed"})
+		}
+
+		gh := github.NewClient()
+		if err := gh.AddIssueAssignees(c.Context(), token, fullName, issueNumber, []string{req.Assignee}); err != nil {
+			slog.Warn("failed to add assignee on GitHub", "project_id", projectID.String(), "issue_number", issueNumber, "assignee", req.Assignee, "error", err)
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "github_assign_failed"})
+		}
+
+		assigneesJSON, _ := json.Marshal([]map[string]string{{"login": req.Assignee}})
+		_, _ = h.db.Pool.Exec(c.Context(), `
+UPDATE github_issues SET assignees = $3, last_seen_at = now()
+WHERE project_id = $1 AND number = $2
+`, projectID, issueNumber, assigneesJSON)
+
+		var githubIssueID int64
+		_ = h.db.Pool.QueryRow(c.Context(), `SELECT github_issue_id FROM github_issues WHERE project_id = $1 AND number = $2`, projectID, issueNumber).Scan(&githubIssueID)
+		base := strings.TrimSpace(strings.TrimRight(h.cfg.FrontendBaseURL, "/"))
+		manageURL := base + "/dashboard?tab=browse&project=" + projectID.String() + "&issue=" + fmt.Sprintf("%d", githubIssueID)
+		if base == "" || !strings.HasPrefix(base, "http") {
+			manageURL = "/dashboard?tab=browse&project=" + projectID.String() + "&issue=" + fmt.Sprintf("%d", githubIssueID)
+		}
+		botBody := fmt.Sprintf("Congratulations, @%s! 🎉 Your application was accepted by the repo's maintainers.\n\n"+
+			"Please resolve the issue such that the repo's maintainers have enough time to review your contribution.\n\n"+
+			"**Warning:** When opening a PR, please link it to this issue to ensure it gets tracked accurately.\n\n"+
+			"Repo maintainers: You can manage this issue, including adjusting complexity and points, [here](%s).",
+			req.Assignee, manageURL)
+
+		ghComment, err := gh.CreateIssueComment(c.Context(), token, fullName, issueNumber, botBody)
+		if err != nil {
+			slog.Warn("assign: bot congratulations comment failed", "error", err)
+		} else {
+			commentJSON, _ := json.Marshal(ghComment)
+			_, _ = h.db.Pool.Exec(c.Context(), `
+UPDATE github_issues SET comments = COALESCE(comments, '[]'::jsonb) || $3::jsonb,
+  comments_count = COALESCE(comments_count, 0) + 1, updated_at_github = $4, last_seen_at = now()
+WHERE project_id = $1 AND number = $2
+`, projectID, issueNumber, commentJSON, ghComment.UpdatedAt)
+		}
+
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
+	}
+}
+
+// Unassign removes the current assignee(s) from the GitHub issue and posts a bot comment. Maintainer only.
+func (h *IssueApplicationsHandler) Unassign() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if h.db == nil || h.db.Pool == nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "db_not_configured"})
+		}
+		if strings.TrimSpace(h.cfg.GitHubAppID) == "" || strings.TrimSpace(h.cfg.GitHubAppPrivateKey) == "" {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "github_app_not_configured"})
+		}
+
+		projectID, err := uuid.Parse(c.Params("id"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_project_id"})
+		}
+		issueNumber, err := c.ParamsInt("number")
+		if err != nil || issueNumber <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_issue_number"})
+		}
+
+		userIDStr, _ := c.Locals(auth.LocalUserID).(string)
+		userID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid_user"})
+		}
+		role, _ := c.Locals(auth.LocalRole).(string)
+
+		var owner uuid.UUID
+		var fullName, installationID string
+		var assigneesJSON []byte
+		err = h.db.Pool.QueryRow(c.Context(), `
+SELECT p.owner_user_id, p.github_full_name, COALESCE(p.github_app_installation_id, ''), COALESCE(gi.assignees, '[]'::jsonb)
+FROM projects p
+JOIN github_issues gi ON gi.project_id = p.id
+WHERE p.id = $1 AND p.status = 'verified' AND p.deleted_at IS NULL AND gi.number = $2
+`, projectID, issueNumber).Scan(&owner, &fullName, &installationID, &assigneesJSON)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "issue_not_found"})
+		}
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "project_lookup_failed"})
+		}
+		if owner != userID && role != "admin" {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+		}
+		if installationID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "project_has_no_github_app_installation"})
+		}
+
+		var assignees []struct {
+			Login string `json:"login"`
+		}
+		_ = json.Unmarshal(assigneesJSON, &assignees)
+		if len(assignees) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "issue_has_no_assignees"})
+		}
+		logins := make([]string, 0, len(assignees))
+		for _, a := range assignees {
+			if a.Login != "" {
+				logins = append(logins, a.Login)
+			}
+		}
+		if len(logins) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "issue_has_no_assignees"})
+		}
+
+		appClient, err := github.NewGitHubAppClient(h.cfg.GitHubAppID, h.cfg.GitHubAppPrivateKey)
+		if err != nil {
+			slog.Error("failed to create GitHub App client for unassign", "error", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "github_app_client_failed"})
+		}
+		token, err := appClient.GetInstallationToken(c.Context(), installationID)
+		if err != nil {
+			slog.Warn("failed to get installation token for unassign", "project_id", projectID.String(), "error", err)
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "installation_token_failed"})
+		}
+
+		gh := github.NewClient()
+		if err := gh.RemoveIssueAssignees(c.Context(), token, fullName, issueNumber, logins); err != nil {
+			slog.Warn("failed to remove assignees on GitHub", "project_id", projectID.String(), "issue_number", issueNumber, "error", err)
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "github_unassign_failed"})
+		}
+
+		_, _ = h.db.Pool.Exec(c.Context(), `
+UPDATE github_issues SET assignees = '[]'::jsonb, last_seen_at = now()
+WHERE project_id = $1 AND number = $2
+`, projectID, issueNumber)
+
+		who := "@" + logins[0]
+		if len(logins) > 1 {
+			who = "@" + strings.Join(logins, ", @")
+		}
+		botBody := fmt.Sprintf("%s has been unassigned from this issue. The maintainer may assign another contributor.", who)
+
+		ghComment, err := gh.CreateIssueComment(c.Context(), token, fullName, issueNumber, botBody)
+		if err != nil {
+			slog.Warn("unassign: bot comment failed", "error", err)
+		} else {
+			commentJSON, _ := json.Marshal(ghComment)
+			_, _ = h.db.Pool.Exec(c.Context(), `
+UPDATE github_issues SET comments = COALESCE(comments, '[]'::jsonb) || $3::jsonb,
+  comments_count = COALESCE(comments_count, 0) + 1, updated_at_github = $4, last_seen_at = now()
+WHERE project_id = $1 AND number = $2
+`, projectID, issueNumber, commentJSON, ghComment.UpdatedAt)
+		}
+
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
+	}
+}
+
+type rejectRequest struct {
+	Assignee string `json:"assignee"`
+}
+
+// Reject posts a bot comment that the applicant's application was not accepted. Maintainer only.
+func (h *IssueApplicationsHandler) Reject() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if h.db == nil || h.db.Pool == nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "db_not_configured"})
+		}
+		if strings.TrimSpace(h.cfg.GitHubAppID) == "" || strings.TrimSpace(h.cfg.GitHubAppPrivateKey) == "" {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "github_app_not_configured"})
+		}
+
+		projectID, err := uuid.Parse(c.Params("id"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_project_id"})
+		}
+		issueNumber, err := c.ParamsInt("number")
+		if err != nil || issueNumber <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_issue_number"})
+		}
+
+		userIDStr, _ := c.Locals(auth.LocalUserID).(string)
+		userID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid_user"})
+		}
+		role, _ := c.Locals(auth.LocalRole).(string)
+
+		var req rejectRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_body"})
+		}
+		req.Assignee = strings.TrimSpace(req.Assignee)
+		if req.Assignee == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "assignee_required"})
+		}
+
+		var owner uuid.UUID
+		var fullName, installationID string
+		err = h.db.Pool.QueryRow(c.Context(), `
+SELECT owner_user_id, github_full_name, COALESCE(github_app_installation_id, '')
+FROM projects
+WHERE id = $1 AND status = 'verified' AND deleted_at IS NULL
+`, projectID).Scan(&owner, &fullName, &installationID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "project_not_found"})
+		}
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "project_lookup_failed"})
+		}
+		if owner != userID && role != "admin" {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+		}
+		if installationID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "project_has_no_github_app_installation"})
+		}
+
+		appClient, err := github.NewGitHubAppClient(h.cfg.GitHubAppID, h.cfg.GitHubAppPrivateKey)
+		if err != nil {
+			slog.Error("failed to create GitHub App client for reject", "error", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "github_app_client_failed"})
+		}
+		token, err := appClient.GetInstallationToken(c.Context(), installationID)
+		if err != nil {
+			slog.Warn("failed to get installation token for reject", "project_id", projectID.String(), "error", err)
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "installation_token_failed"})
+		}
+
+		botBody := fmt.Sprintf("@%s your application was not accepted for this issue. The maintainer may assign another contributor.", req.Assignee)
+		gh := github.NewClient()
+		ghComment, err := gh.CreateIssueComment(c.Context(), token, fullName, issueNumber, botBody)
+		if err != nil {
+			slog.Warn("reject: bot comment failed", "error", err)
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "github_comment_create_failed"})
+		}
+		commentJSON, _ := json.Marshal(ghComment)
+		_, _ = h.db.Pool.Exec(c.Context(), `
+UPDATE github_issues SET comments = COALESCE(comments, '[]'::jsonb) || $3::jsonb,
+  comments_count = COALESCE(comments_count, 0) + 1, updated_at_github = $4, last_seen_at = now()
+WHERE project_id = $1 AND number = $2
+`, projectID, issueNumber, commentJSON, ghComment.UpdatedAt)
+
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
+	}
+}
 
