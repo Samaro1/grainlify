@@ -1837,6 +1837,20 @@ impl BountyEscrowContract {
         ))
     }
 
+    /// Adds or removes an address from the whitelist.
+    /// Only the admin can call this.
+    pub fn set_whitelist(env: Env, address: Address, whitelisted: bool) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Admin not set");
+        admin.require_auth();
+
+        anti_abuse::set_whitelist(&env, address, whitelisted);
+    }
+
+    /// Gets the current rate limit configuration.
+    pub fn get_config(env: Env) -> anti_abuse::AntiAbuseConfig {
+        anti_abuse::get_config(&env)
+    }
+
     /// Batch lock funds for multiple bounties in a single transaction.
     /// This improves gas efficiency by reducing transaction overhead.
     ///
