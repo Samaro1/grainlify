@@ -100,10 +100,10 @@ jobs:
           fi
           echo "Contract built successfully for Stellar/Soroban deployment"
 
-      - name: Run script tests
+      - name: Run contract script tests
         run: |
-          chmod +x ./contracts/scripts/test_*.sh
-          ./contracts/scripts/test_deploy_failures.sh
-          ./contracts/scripts/test_upgrade_failures.sh
+          contracts/scripts/test_deploy_failures.sh
+          contracts/scripts/test_upgrade_failures.sh
+
 
      
