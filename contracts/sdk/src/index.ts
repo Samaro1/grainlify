@@ -16,4 +16,9 @@ export {
   ContractErrorCode,
   createContractError,
   parseContractError,
-} from "./errors";
+  parseContractErrorByCode,
+  getContractErrorMessage,
+  BOUNTY_ESCROW_ERROR_MAP,
+  GOVERNANCE_ERROR_MAP,
+  CIRCUIT_BREAKER_ERROR_MAP,
+} from './errors';
