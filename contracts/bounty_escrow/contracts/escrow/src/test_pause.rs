@@ -399,3 +399,243 @@ fn test_emergency_withdraw_succeeds() {
     assert_eq!(token_client.balance(&escrow_client.address), 0);
     assert_eq!(token_client.balance(&target), 500);
 }
+
+// =========================================================================
+// RBAC + EMERGENCY WITHDRAW TESTS (Issue #389)
+// =========================================================================
+
+/// Helper: sets up env, admin, operator, token, and escrow contract.
+/// Returns (env, admin, operator, token_client, escrow_client)
+fn setup_rbac_env<'a>(
+    env: &'a Env,
+) -> (
+    Address,
+    Address,
+    token::Client<'a>,
+    BountyEscrowContractClient<'a>,
+) {
+    let admin = Address::generate(env);
+    let operator = Address::generate(env);
+    let token_admin = Address::generate(env);
+
+    let contract_id = env.register_contract(None, BountyEscrowContract);
+    let escrow_client = BountyEscrowContractClient::new(env, &contract_id);
+
+    let token_contract = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = token::Client::new(env, &token_contract);
+    let token_admin_client = token::StellarAssetClient::new(env, &token_contract);
+
+    escrow_client.init(&admin, &token_client.address);
+
+    let depositor = Address::generate(env);
+    token_admin_client.mint(&depositor, &1000);
+    let deadline = env.ledger().timestamp() + 1000;
+    escrow_client.lock_funds(&depositor, &1u64, &500i128, &deadline);
+
+    (admin, operator, token_client, escrow_client)
+}
+
+/// Admin CAN perform emergency_withdraw when contract is paused.
+#[test]
+fn test_rbac_admin_can_emergency_withdraw_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, _, token_client, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.set_paused(&Some(true), &None, &None, &None);
+
+    assert_eq!(token_client.balance(&escrow_client.address), 500);
+
+    escrow_client.emergency_withdraw(&target);
+
+    assert_eq!(token_client.balance(&escrow_client.address), 0);
+    assert_eq!(token_client.balance(&target), 500);
+}
+
+/// Operator/non-admin role CANNOT perform emergency_withdraw — auth rejected.
+#[test]
+#[should_panic(expected = "Error(Auth, InvalidAction)")]
+fn test_rbac_operator_cannot_emergency_withdraw() {
+    let env = Env::default();
+
+    let (_, _operator, _token_client, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.set_paused(&Some(true), &None, &None, &None);
+    escrow_client.emergency_withdraw(&target);
+}
+
+/// emergency_withdraw FAILS even for admin when contract is NOT paused.
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn test_rbac_admin_emergency_withdraw_requires_paused_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.emergency_withdraw(&target);
+}
+
+/// emergency_withdraw emits the correct event with admin address and amount.
+#[test]
+fn test_rbac_emergency_withdraw_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, _token_client, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.set_paused(&Some(true), &None, &None, &None);
+    escrow_client.emergency_withdraw(&target);
+
+    let all_events = env.events().all();
+    let last_event = all_events.last().unwrap();
+
+    assert_eq!(
+        vec![&env, last_event],
+        vec![
+            &env,
+            (
+                escrow_client.address.clone(),
+                (symbol_short!("em_wtd"),).into_val(&env),
+                events::EmergencyWithdrawEvent {
+                    admin: admin.clone(),
+                    recipient: target.clone(),
+                    amount: 500i128,
+                    timestamp: env.ledger().timestamp(),
+                }
+                .into_val(&env)
+            ),
+        ]
+    );
+}
+
+/// Drain is idempotent: second emergency_withdraw on empty contract does nothing (no panic).
+#[test]
+fn test_rbac_emergency_withdraw_on_empty_contract_is_safe() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, token_client, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.set_paused(&Some(true), &None, &None, &None);
+    escrow_client.emergency_withdraw(&target); // drains 500
+    escrow_client.emergency_withdraw(&target); // balance = 0, should NOT panic
+
+    assert_eq!(token_client.balance(&escrow_client.address), 0);
+}
+
+/// Paused state is preserved after a successful emergency_withdraw.
+#[test]
+fn test_rbac_pause_state_preserved_after_emergency_withdraw() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.set_paused(&Some(true), &None, &None, &None);
+    escrow_client.emergency_withdraw(&target);
+
+    let depositor = Address::generate(&env);
+    let deadline = env.ledger().timestamp() + 2000;
+    let res = escrow_client.try_lock_funds(&depositor, &99u64, &100i128, &deadline);
+    assert!(res.is_err(), "lock should still be paused after withdraw");
+}
+
+/// Partial pause: only lock paused, release still works — emergency_withdraw still requires lock_paused.
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn test_rbac_emergency_withdraw_requires_lock_paused_not_release_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.set_paused(&None, &Some(true), &None, &None);
+    escrow_client.emergency_withdraw(&target);
+}
+
+/// Partial pause: only refund paused — emergency_withdraw still requires lock_paused.
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn test_rbac_emergency_withdraw_requires_lock_paused_not_refund_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.set_paused(&None, &None, &Some(true), &None);
+    escrow_client.emergency_withdraw(&target);
+}
+
+/// Admin withdraws correct amount when multiple bounties are locked.
+#[test]
+fn test_rbac_emergency_withdraw_drains_all_bounties() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let contract_id = env.register_contract(None, BountyEscrowContract);
+    let escrow_client = BountyEscrowContractClient::new(&env, &contract_id);
+    let token_contract = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = token::Client::new(&env, &token_contract);
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_contract);
+
+    escrow_client.init(&admin, &token_client.address);
+    token_admin_client.mint(&depositor, &3000);
+
+    let deadline = env.ledger().timestamp() + 1000;
+
+    escrow_client.lock_funds(&depositor, &1u64, &500i128, &deadline);
+    escrow_client.lock_funds(&depositor, &2u64, &700i128, &deadline);
+    escrow_client.lock_funds(&depositor, &3u64, &300i128, &deadline);
+
+    assert_eq!(token_client.balance(&escrow_client.address), 1500);
+
+    let target = Address::generate(&env);
+    escrow_client.set_paused(&Some(true), &None, &None, &None);
+    escrow_client.emergency_withdraw(&target);
+
+    assert_eq!(token_client.balance(&escrow_client.address), 0);
+    assert_eq!(token_client.balance(&target), 1500);
+}
+
+/// After emergency_withdraw, admin can unpause and normal ops resume (but escrows are empty).
+#[test]
+fn test_rbac_after_emergency_withdraw_can_unpause_and_reuse() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, token_client, escrow_client) = setup_rbac_env(&env);
+    let target = Address::generate(&env);
+
+    escrow_client.set_paused(&Some(true), &None, &None, &None);
+    escrow_client.emergency_withdraw(&target);
+
+    escrow_client.set_paused(&Some(false), &None, &None, &None);
+    let flags = escrow_client.get_pause_flags();
+    assert_eq!(flags.lock_paused, false);
+
+    let new_depositor = Address::generate(&env);
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_client.address);
+    token_admin_client.mint(&new_depositor, &500);
+
+    let deadline = env.ledger().timestamp() + 2000;
+    escrow_client.lock_funds(&new_depositor, &99u64, &200i128, &deadline);
+    assert_eq!(token_client.balance(&escrow_client.address), 200);
+}
