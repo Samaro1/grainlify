@@ -2370,13 +2370,13 @@ mod escrow_status_transition_tests {
             let bounty_id = 99;
             let amount = 1000;
 
+            setup.setup_escrow_in_state(case.from.clone(), bounty_id, amount);
             if let TransitionAction::Refund = case.action {
                 setup
                     .env
                     .ledger()
                     .set_timestamp(setup.env.ledger().timestamp() + 2000);
             }
-            setup.setup_escrow_in_state(case.from.clone(), bounty_id, amount);
 
             match case.action {
                 TransitionAction::Lock => {
