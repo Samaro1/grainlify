@@ -1583,6 +1583,11 @@ mod test {
     #[cfg(test)]
     pub const WASM: &[u8] = include_bytes!("../target/wasm32v1-none/release/grainlify_core.wasm");
 
+    // Export WASM for testing upgrade/rollback scenarios
     #[cfg(test)]
-    mod upgrade_rollback_tests;
+    pub const WASM: &[u8] = include_bytes!("../target/wasm32v1-none/release/grainlify_core.wasm");
+
 }
+
+#[cfg(test)]
+mod migration_hook_tests;
