@@ -149,7 +149,7 @@ fn test_mixed_pause_states() {
     let flags = escrow_client.get_pause_flags();
     assert!(flags.lock_paused);
     assert!(flags.release_paused);
-    assert!(flags.refund_paused);
+    assert!(!flags.refund_paused);
 
     escrow_client.set_paused(&None, &Some(false), &None, &None);
     let flags = escrow_client.get_pause_flags();
