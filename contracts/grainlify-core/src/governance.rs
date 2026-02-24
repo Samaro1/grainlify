@@ -273,7 +273,7 @@ mod test {
 
     // Note: Tests commented out due to governance module being used as a library
     // rather than a standalone contract. Re-enable when governance is deployed separately.
-    
+
     /*
     fn setup_test(env: &Env) -> (GovernanceContractClient, Address, Address) {
         let contract_id = env.register_contract(None, GovernanceContract);
