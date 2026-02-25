@@ -9,10 +9,7 @@
 #[cfg(feature = "metadata_tagging")]
 mod metadata_tagging_tests {
     use super::super::*;
-    use soroban_sdk::{
-        testutils::Address as _,
-        token, Address, Env, String, Vec as SdkVec,
-    };
+    use soroban_sdk::{testutils::Address as _, token, Address, Env, String, Vec as SdkVec};
 
     fn create_token(
         env: &Env,

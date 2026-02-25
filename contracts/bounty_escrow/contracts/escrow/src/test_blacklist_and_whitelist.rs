@@ -10,8 +10,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo, MockAuth, MockAuthInvoke},
-    Address, Env, IntoVal, String,
+    testutils::{Address as _, Ledger, LedgerInfo},
+    Address, Env,
 };
 
 fn create_env() -> Env {
@@ -87,90 +87,8 @@ fn test_removed_from_whitelist_reenables_rate_limit_checks() {
     client.set_whitelist(&depositor, &true);
     client.set_whitelist(&depositor, &false);
 
-<<<<<<< security/reentrancy-audit-and-guards
-// ============================================================================
-// Admin-Only Access Tests
-// ============================================================================
-
-/// Only the admin can modify the blacklist; other callers must be rejected.
-#[test]
-fn test_only_admin_can_set_blacklist() {
-    let env = Env::default();
-    env.ledger().set(LedgerInfo {
-        timestamp: 1_000_000,
-        protocol_version: 20,
-        sequence_number: 100,
-        network_id: Default::default(),
-        base_reserve: 10,
-        min_temp_entry_ttl: 1000,
-        min_persistent_entry_ttl: 1000,
-        max_entry_ttl: 100_000,
-    });
-    env.mock_all_auths_allowing_non_root_auth();
-
-    let admin = Address::generate(&env);
-    let non_admin = Address::generate(&env);
-    let token = Address::generate(&env);
-
-    let contract_id = env.register_contract(None, BountyEscrowContract);
-    let client = BountyEscrowContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token);
-
-    let target = Address::generate(&env);
-
-    // Admin call must succeed (auth is satisfied by mock).
-    env.mock_auths(&[MockAuth {
-        address: &admin,
-        invoke: &MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "set_blacklist",
-            args: (&target, &true, &None::<String>).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-    client.set_blacklist(&target, &true, &None);
-
-    // Non-admin call must panic / fail auth.
-    env.mock_auths(&[MockAuth {
-        address: &non_admin,
-        invoke: &MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "set_blacklist",
-            args: (&target, &false, &None::<String>).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-    let result = client.try_set_blacklist(&target, &false, &None);
-    assert!(result.is_err());
-}
-
-/// Only the admin can enable whitelist mode.
-#[test]
-fn test_only_admin_can_set_whitelist_mode() {
-    let env = Env::default();
-    env.ledger().set(LedgerInfo {
-        timestamp: 1_000_000,
-        protocol_version: 20,
-        sequence_number: 100,
-        network_id: Default::default(),
-        base_reserve: 10,
-        min_temp_entry_ttl: 1000,
-        min_persistent_entry_ttl: 1000,
-        max_entry_ttl: 100_000,
-    });
-    env.mock_all_auths_allowing_non_root_auth();
-
-    let admin = Address::generate(&env);
-    let non_admin = Address::generate(&env);
-    let token = Address::generate(&env);
-
-    let contract_id = env.register_contract(None, BountyEscrowContract);
-    let client = BountyEscrowContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token);
-=======
     let deadline = env.ledger().timestamp() + 86_400;
     client.lock_funds(&depositor, &21, &100, &deadline);
->>>>>>> master
 
     let second = client.try_lock_funds(&depositor, &22, &100, &deadline);
     assert!(second.is_err());
