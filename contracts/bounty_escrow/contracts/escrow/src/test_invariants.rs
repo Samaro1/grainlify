@@ -40,7 +40,10 @@ fn test_invariant_checker_ci_called_in_major_bounty_flows() {
     client.release_funds(&bounty_id, &contributor);
 
     let calls = env.as_contract(&client.address, || invariants::call_count_for_test(&env));
-    assert!(calls >= 2, "lock_funds and release_funds must each trigger invariant check");
+    assert!(
+        calls >= 2,
+        "lock_funds and release_funds must each trigger invariant check"
+    );
 }
 
 /// Covers all three major flows (lock, release, refund) and asserts the exact
