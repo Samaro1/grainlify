@@ -28,7 +28,8 @@
                 },
                 {
                   "string": "bounty"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -100,6 +101,12 @@
                       "val": {
                         "u64": 67890
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "reference_hash"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -373,6 +380,77 @@
                 },
                 {
                   "string": "bounty"
+                },
+                "void"
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "meta_upd"
+              },
+              {
+                "u64": 1
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "bounty_id"
+                  },
+                  "val": {
+                    "u64": 1
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "bounty_type"
+                  },
+                  "val": {
+                    "string": "bounty"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "issue_id"
+                  },
+                  "val": {
+                    "u64": 67890
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "reference_hash"
+                  },
+                  "val": "void"
+                },
+                {
+                  "key": {
+                    "symbol": "repo_id"
+                  },
+                  "val": {
+                    "u64": 12345
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "timestamp"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
                 }
               ]
             }
@@ -460,6 +538,12 @@
                   "val": {
                     "u64": 67890
                   }
+                },
+                {
+                  "key": {
+                    "symbol": "reference_hash"
+                  },
+                  "val": "void"
                 },
                 {
                   "key": {
