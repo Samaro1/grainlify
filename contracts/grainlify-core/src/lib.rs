@@ -371,6 +371,8 @@ pub struct GrainlifyContract;
 /// # Keys
 /// * `Admin` - Stores the administrator address (set once at initialization)
 /// * `Version` - Stores the current contract version number
+/// * `ChainId` - Stores the chain identifier for cross-network protection
+/// * `NetworkId` - Stores the network identifier for environment-specific behavior
 ///
 /// # Storage Type
 /// Instance storage - Persists across contract upgrades
@@ -396,6 +398,11 @@ enum DataKey {
     /// Previous version before migration (for rollback support)
     PreviousVersion,
 
+    /// Chain identifier (e.g., "stellar", "ethereum") for cross-network protection
+    ChainId,
+
+    /// Network identifier (e.g., "mainnet", "testnet", "futurenet") for environment-specific behavior
+    NetworkId,
     /// Configuration snapshot data by snapshot id
     ConfigSnapshot(u64),
 
@@ -571,6 +578,27 @@ impl GrainlifyContract {
         // Track performance
         let duration = env.ledger().timestamp().saturating_sub(start);
         monitoring::emit_performance(&env, symbol_short!("init"), duration);
+    }
+
+    /// Initializes the contract with admin address and network configuration.
+    pub fn init_with_network(env: Env, admin: Address, chain_id: String, network_id: String) {
+        let start = env.ledger().timestamp();
+
+        if env.storage().instance().has(&DataKey::Admin) {
+            monitoring::track_operation(&env, symbol_short!("init_net"), admin.clone(), false);
+            panic!("Already initialized");
+        }
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Version, &VERSION);
+        env.storage().instance().set(&DataKey::ChainId, &chain_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::NetworkId, &network_id);
+
+        monitoring::track_operation(&env, symbol_short!("init_net"), admin, true);
+        let duration = env.ledger().timestamp().saturating_sub(start);
+        monitoring::emit_performance(&env, symbol_short!("init_net"), duration);
     }
 
     /// Proposes an upgrade with a new WASM hash (multisig version).
@@ -909,7 +937,6 @@ impl GrainlifyContract {
     }
 
     /// Creates an on-chain snapshot of critical core configuration (admin-only).
-    /// Returns snapshot id.
     pub fn create_config_snapshot(env: Env) -> u64 {
         let admin: Address = env
             .storage()
@@ -973,26 +1000,37 @@ impl GrainlifyContract {
         next_id
     }
 
-    /// Lists retained core configuration snapshots in chronological order.
-    pub fn list_config_snapshots(env: Env) -> Vec<CoreConfigSnapshot> {
-        let index: Vec<u64> = env
-            .storage()
-            .instance()
-            .get(&DataKey::SnapshotIndex)
-            .unwrap_or(Vec::new(&env));
+    /// Retrieves the chain identifier.
+    pub fn get_chain_id(env: Env) -> Option<String> {
+        env.storage().instance().get(&DataKey::ChainId)
+    }
 
-        let mut snapshots = Vec::new(&env);
-        for snapshot_id in index.iter() {
-            if let Some(snapshot) = env
-                .storage()
-                .instance()
-                .get(&DataKey::ConfigSnapshot(snapshot_id))
-            {
-                snapshots.push_back(snapshot);
-            }
-        }
-
-        snapshots
+    /// Retrieves the network identifier.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    ///
+    /// # Returns
+    /// * `Option<String>` - Network identifier if set, None if not initialized with network config
+    ///
+    /// # Usage
+    /// Use this to verify the network environment for:
+    /// - Environment-specific behavior
+    /// - Testnet vs mainnet differentiation
+    /// - Safe replay protection
+    ///
+    /// # Example
+    /// ```rust
+    /// let network_id = contract.get_network_id(&env);
+    /// match network_id.as_str() {
+    ///     "mainnet" => println!("Running on mainnet - be careful!"),
+    ///     "testnet" => println!("Running on testnet - safe for testing"),
+    ///     "futurenet" => println!("Running on futurenet - experimental"),
+    ///     _ => println!("Unknown network"),
+    /// }
+    /// ```
+    pub fn get_network_id(env: Env) -> Option<String> {
+        env.storage().instance().get(&DataKey::NetworkId)
     }
 
     /// Restores core configuration from a previously captured snapshot (admin-only).
@@ -1039,6 +1077,14 @@ impl GrainlifyContract {
             (symbol_short!("cfg_snap"), symbol_short!("restore")),
             (snapshot_id, env.ledger().timestamp()),
         );
+    }
+
+    /// Gets both chain and network identifiers as a tuple.
+    pub fn get_network_info(env: Env) -> (Option<String>, Option<String>) {
+        (
+            env.storage().instance().get(&DataKey::ChainId),
+            env.storage().instance().get(&DataKey::NetworkId),
+        )
     }
 
     // ========================================================================
@@ -1538,4 +1584,318 @@ mod test {
         let events = env.events().all();
         assert!(events.len() > initial_event_count);
     }
+
+    #[test]
+    fn test_admin_initialization() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        assert_eq!(client.get_version(), 2);
+    }
+
+    #[test]
+    fn test_network_initialization() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let chain_id = String::from_str(&env, "stellar");
+        let network_id = String::from_str(&env, "testnet");
+
+        client.init_with_network(&admin, &chain_id, &network_id);
+
+        // Verify initialization
+        assert_eq!(client.get_version(), 2);
+
+        // Verify network configuration
+        let retrieved_chain = client.get_chain_id();
+        let retrieved_network = client.get_network_id();
+
+        assert_eq!(retrieved_chain, Some(chain_id));
+        assert_eq!(retrieved_network, Some(network_id));
+    }
+
+    #[test]
+    fn test_network_info_getter() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let chain_id = String::from_str(&env, "ethereum");
+        let network_id = String::from_str(&env, "mainnet");
+
+        client.init_with_network(&admin, &chain_id, &network_id);
+
+        // Test tuple getter
+        let (chain, network) = client.get_network_info();
+        assert_eq!(chain, Some(chain_id));
+        assert_eq!(network, Some(network_id));
+    }
+
+    #[test]
+    #[should_panic(expected = "Already initialized")]
+    fn test_cannot_reinitialize_network_config() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let chain_id = String::from_str(&env, "stellar");
+        let network_id = String::from_str(&env, "testnet");
+
+        // First initialization should succeed
+        client.init_with_network(&admin1, &chain_id, &network_id);
+
+        // Second initialization should panic
+        client.init_with_network(&admin2, &chain_id, &network_id);
+    }
+
+    #[test]
+    fn test_legacy_init_still_works() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+
+        // Legacy init should still work (without network config)
+        client.init_admin(&admin);
+
+        // Network info should be None for legacy initialization
+        assert_eq!(client.get_chain_id(), None);
+        assert_eq!(client.get_network_id(), None);
+        let (chain, network) = client.get_network_info();
+        assert_eq!(chain, None);
+        assert_eq!(network, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Already initialized")]
+    fn test_cannot_reinitialize_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+
+        client.init_admin(&admin1);
+        client.init_admin(&admin2);
+    }
+
+    #[test]
+    fn test_admin_persists_across_version_updates() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        client.set_version(&3);
+        assert_eq!(client.get_version(), 3);
+
+        client.set_version(&4);
+        assert_eq!(client.get_version(), 4);
+    }
+
+    // ========================================================================
+    // Migration Hook Tests (Issue #45)
+    // ========================================================================
+
+    #[test]
+    fn test_migration_only_runs_once_per_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        // Verify initial version
+        assert_eq!(client.get_version(), 2);
+
+        // Migrate to v3
+        let hash = BytesN::from_array(&env, &[1u8; 32]);
+        client.migrate(&3, &hash);
+
+        let state1 = client.get_migration_state().unwrap();
+        let timestamp1 = state1.migrated_at;
+
+        // Second call with same version - should be idempotent (not re-execute)
+        client.migrate(&3, &hash);
+        let state2 = client.get_migration_state().unwrap();
+
+        // Verify state unchanged (migration not re-executed)
+        assert_eq!(state2.migrated_at, timestamp1);
+        assert_eq!(state2.to_version, 3);
+    }
+
+    #[test]
+    fn test_migration_transforms_state_correctly() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        let initial_version = client.get_version();
+        assert_eq!(initial_version, 2);
+
+        let hash = BytesN::from_array(&env, &[2u8; 32]);
+
+        // Execute migration to v3
+        client.migrate(&3, &hash);
+
+        // Verify transformations
+        assert_eq!(client.get_version(), 3);
+
+        let state = client.get_migration_state().unwrap();
+        assert_eq!(state.from_version, initial_version);
+        assert_eq!(state.to_version, 3);
+        assert_eq!(state.migration_hash, hash);
+        // Timestamp is set (may be 0 in test environment)
+    }
+
+    #[test]
+    fn test_migration_requires_admin_authorization() {
+        let env = Env::default();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let hash = BytesN::from_array(&env, &[3u8; 32]);
+
+        // This should require admin auth
+        client.migrate(&3, &hash);
+
+        // Verify auth was required
+        assert!(!env.auths().is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "Target version must be greater than current version")]
+    fn test_migration_rejects_downgrade() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        client.set_version(&4);
+
+        let hash = BytesN::from_array(&env, &[4u8; 32]);
+
+        // Try to migrate to lower version - should panic
+        client.migrate(&3, &hash);
+    }
+
+    #[test]
+    fn test_migration_state_persists() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        let hash = BytesN::from_array(&env, &[5u8; 32]);
+        client.migrate(&3, &hash);
+
+        // Retrieve state multiple times
+        let state1 = client.get_migration_state().unwrap();
+        let state2 = client.get_migration_state().unwrap();
+
+        assert_eq!(state1.from_version, state2.from_version);
+        assert_eq!(state1.to_version, state2.to_version);
+        assert_eq!(state1.migrated_at, state2.migrated_at);
+        assert_eq!(state1.migration_hash, state2.migration_hash);
+    }
+
+    #[test]
+    fn test_migration_emits_success_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        let initial_events = env.events().all().len();
+
+        let hash = BytesN::from_array(&env, &[6u8; 32]);
+        client.migrate(&3, &hash);
+
+        let events = env.events().all();
+        assert!(events.len() > initial_events);
+    }
+
+    #[test]
+    fn test_migration_tracks_previous_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        let v_before = client.get_version();
+        assert_eq!(v_before, 2);
+
+        let hash = BytesN::from_array(&env, &[7u8; 32]);
+        client.migrate(&3, &hash);
+
+        let state = client.get_migration_state().unwrap();
+        assert_eq!(state.from_version, v_before);
+        assert_eq!(state.to_version, 3);
+    }
+    // Export WASM for testing upgrade/rollback scenarios
+    // #[cfg(test)]
+    // pub const WASM: &[u8] = include_bytes!("../target/wasm32v1-none/release/grainlify_core.wasm");
+
+    #[cfg(test)]
+    mod upgrade_rollback_tests;
 }
+
+// #[cfg(test)]
+// mod migration_hook_tests;

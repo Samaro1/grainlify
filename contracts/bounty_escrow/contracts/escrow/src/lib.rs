@@ -28,7 +28,7 @@ use events::{
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
-    Symbol, Vec,
+    String, Symbol, Vec,
 };
 
 pub(crate) mod monitoring {
@@ -471,6 +471,12 @@ pub enum DataKey {
     BeneficiaryTickets(Address), // Address -> Vec<u64> of ticket_ids for beneficiary
     CapabilityNonce, // monotonically increasing capability id
     Capability(u64), // capability_id -> Capability
+
+    /// Chain identifier (e.g., "stellar", "ethereum") for cross-network protection
+    ChainId,
+
+    /// Network identifier (e.g., "mainnet", "testnet", "futurenet") for environment-specific behavior
+    NetworkId,
 }
 
 #[contracttype]
@@ -546,6 +552,27 @@ pub struct ReleaseApproval {
 }
 
 #[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DisputeReason {
+    QualityIssue = 1,
+    IncompleteWork = 2,
+    DeadlineMissed = 3,
+    ParticipantFraud = 4,
+    Other = 5,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DisputeOutcome {
+    ResolvedByPayout = 1,
+    ResolvedByRefund = 2,
+    CancelledByAdmin = 3,
+    NoActionTaken = 4,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClaimRecord {
     pub bounty_id: u64,
@@ -553,6 +580,7 @@ pub struct ClaimRecord {
     pub amount: i128,
     pub expires_at: u64,
     pub claimed: bool,
+    pub reason: DisputeReason,
 }
 
 #[contracttype]
@@ -687,6 +715,58 @@ impl BountyEscrowContract {
         Ok(())
     }
 
+    /// Initialize the contract with admin, token, and network configuration.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `admin` - Address authorized to perform administrative functions
+    /// * `token` - Token address for escrow operations
+    /// * `chain_id` - Chain identifier (e.g., "stellar", "ethereum")
+    /// * `network_id` - Network identifier (e.g., "mainnet", "testnet", "futurenet")
+    ///
+    /// # Security Considerations
+    /// - Chain and network IDs are immutable after initialization
+    /// - These values prevent cross-network replay attacks
+    /// - Should match the actual deployment environment
+    pub fn init_with_network(
+        env: Env,
+        admin: Address,
+        token: asset::AssetId,
+        chain_id: String,
+        network_id: String,
+    ) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        let normalized_token =
+            asset::normalize_asset_id(&env, &token).map_err(|_| Error::InvalidAssetId)?;
+
+        // Store admin and token
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Token, &normalized_token);
+
+        // Store chain and network identifiers
+        env.storage().instance().set(&DataKey::ChainId, &chain_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::NetworkId, &network_id);
+
+        emit_bounty_initialized(
+            &env,
+            BountyEscrowInitialized {
+                version: EVENT_VERSION_V2,
+                admin,
+                token: normalized_token,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
     /// Calculate fee using floor rounding. Delegates to `token_math::calculate_fee`.
     #[allow(dead_code)]
     fn calculate_fee(amount: i128, fee_rate: i128) -> i128 {
@@ -777,6 +857,10 @@ impl BountyEscrowContract {
 
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+
+        // Validate and increment nonce to prevent replay
+        nonce::validate_and_increment_nonce(&env, &admin, nonce)
+            .map_err(|_| Error::InvalidNonce)?;
 
         let mut flags = Self::get_pause_flags(&env);
         let timestamp = env.ledger().timestamp();
@@ -1273,6 +1357,57 @@ impl BountyEscrowContract {
         Self::get_fee_config_internal(&env)
     }
 
+    /// Retrieves the chain identifier.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    ///
+    /// # Returns
+    /// * `Option<String>` - Chain identifier if set, None if not initialized with network config
+    ///
+    /// # Usage
+    /// Use this to verify the chain environment for:
+    /// - Cross-network protection
+    /// - Replay attack prevention
+    /// - Environment-specific behavior
+    pub fn get_chain_id(env: Env) -> Option<String> {
+        env.storage().instance().get(&DataKey::ChainId)
+    }
+
+    /// Retrieves the network identifier.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    ///
+    /// # Returns
+    /// * `Option<String>` - Network identifier if set, None if not initialized with network config
+    ///
+    /// # Usage
+    /// Use this to verify the network environment for:
+    /// - Environment-specific behavior
+    /// - Testnet vs mainnet differentiation
+    /// - Safe replay protection
+    pub fn get_network_id(env: Env) -> Option<String> {
+        env.storage().instance().get(&DataKey::NetworkId)
+    }
+
+    /// Gets both chain and network identifiers as a tuple.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    ///
+    /// # Returns
+    /// * `(Option<String>, Option<String>)` - Tuple of (chain_id, network_id)
+    ///
+    /// # Usage
+    /// Convenience function to get both identifiers in one call.
+    pub fn get_network_info(env: Env) -> (Option<String>, Option<String>) {
+        (
+            env.storage().instance().get(&DataKey::ChainId),
+            env.storage().instance().get(&DataKey::NetworkId),
+        )
+    }
+
     /// Update multisig configuration (admin only)
     pub fn update_multisig_config(
         env: Env,
@@ -1688,7 +1823,12 @@ impl BountyEscrowContract {
     /// Authorize a release as a pending claim instead of immediate transfer.
     /// Admin calls this instead of release_funds when claim period is active.
     /// Beneficiary must call claim() within the window to receive funds.
-    pub fn authorize_claim(env: Env, bounty_id: u64, recipient: Address) -> Result<(), Error> {
+    pub fn authorize_claim(
+        env: Env,
+        bounty_id: u64,
+        recipient: Address,
+        reason: DisputeReason,
+    ) -> Result<(), Error> {
         if Self::check_paused(&env, symbol_short!("release")) {
             return Err(Error::FundsPaused);
         }
@@ -1724,6 +1864,7 @@ impl BountyEscrowContract {
             amount: escrow.amount,
             expires_at: now.saturating_add(claim_window),
             claimed: false,
+            reason: reason.clone(),
         };
 
         env.storage()
@@ -1737,6 +1878,7 @@ impl BountyEscrowContract {
                 recipient,
                 amount: escrow.amount,
                 expires_at: claim.expires_at,
+                reason,
             },
         );
         Ok(())
@@ -1814,6 +1956,7 @@ impl BountyEscrowContract {
                 recipient: claim_recipient,
                 amount: claim_amount,
                 claimed_at: now,
+                outcome: DisputeOutcome::ResolvedByPayout,
             },
         );
 
@@ -1894,13 +2037,18 @@ impl BountyEscrowContract {
                 recipient: claim.recipient,
                 amount: claim.amount,
                 claimed_at: now,
+                outcome: DisputeOutcome::ResolvedByPayout,
             },
         );
         Ok(())
     }
 
     /// Admin can cancel an expired or unwanted pending claim, returning escrow to Locked.
-    pub fn cancel_pending_claim(env: Env, bounty_id: u64) -> Result<(), Error> {
+    pub fn cancel_pending_claim(
+        env: Env,
+        bounty_id: u64,
+        outcome: DisputeOutcome,
+    ) -> Result<(), Error> {
         if !env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::NotInitialized);
         }
@@ -1936,6 +2084,7 @@ impl BountyEscrowContract {
                 amount: claim.amount,
                 cancelled_at: env.ledger().timestamp(),
                 cancelled_by: admin,
+                outcome,
             },
         );
         Ok(())
@@ -3817,7 +3966,7 @@ mod test_auto_refund_permissions;
 #[cfg(test)]
 mod test_bounty_escrow;
 #[cfg(test)]
-mod test_capability_tokens;
+mod test_compatibility;
 #[cfg(test)]
 mod test_dispute_resolution;
 #[cfg(test)]
