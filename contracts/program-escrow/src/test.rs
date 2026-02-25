@@ -552,6 +552,77 @@ fn test_full_lifecycle_multi_program_batch_payouts() {
 }
 
 #[test]
+fn test_multi_token_balance_accounting_isolated_across_program_instances() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Two program escrow instances with different token contracts.
+    let contract_a = env.register_contract(None, ProgramEscrowContract);
+    let contract_b = env.register_contract(None, ProgramEscrowContract);
+    let client_a = ProgramEscrowContractClient::new(&env, &contract_a);
+    let client_b = ProgramEscrowContractClient::new(&env, &contract_b);
+
+    let token_admin_a = Address::generate(&env);
+    let token_admin_b = Address::generate(&env);
+    let token_a = env.register_stellar_asset_contract(token_admin_a.clone());
+    let token_b = env.register_stellar_asset_contract(token_admin_b.clone());
+    let token_client_a = token::Client::new(&env, &token_a);
+    let token_client_b = token::Client::new(&env, &token_b);
+    let token_admin_client_a = token::StellarAssetClient::new(&env, &token_a);
+    let token_admin_client_b = token::StellarAssetClient::new(&env, &token_b);
+
+    let payout_key_a = Address::generate(&env);
+    let payout_key_b = Address::generate(&env);
+
+    client_a.init_program(
+        &String::from_str(&env, "multi-token-a"),
+        &payout_key_a,
+        &token_a,
+        &payout_key_a,
+        &None,
+    );
+    client_b.init_program(
+        &String::from_str(&env, "multi-token-b"),
+        &payout_key_b,
+        &token_b,
+        &payout_key_b,
+        &None,
+    );
+
+    token_admin_client_a.mint(&client_a.address, &500_000);
+    token_admin_client_b.mint(&client_b.address, &300_000);
+    client_a.lock_program_funds(&500_000);
+    client_b.lock_program_funds(&300_000);
+
+    // Initial per-token accounting after lock.
+    assert_eq!(client_a.get_remaining_balance(), 500_000);
+    assert_eq!(client_b.get_remaining_balance(), 300_000);
+    assert_eq!(token_client_a.balance(&client_a.address), 500_000);
+    assert_eq!(token_client_b.balance(&client_b.address), 300_000);
+
+    let recipient = Address::generate(&env);
+    client_a.single_payout(&recipient, &120_000);
+
+    // Payout in token A should not affect token B program balances.
+    assert_eq!(client_a.get_remaining_balance(), 380_000);
+    assert_eq!(client_b.get_remaining_balance(), 300_000);
+    assert_eq!(token_client_a.balance(&recipient), 120_000);
+    assert_eq!(token_client_b.balance(&recipient), 0);
+    assert_eq!(token_client_a.balance(&client_a.address), 380_000);
+    assert_eq!(token_client_b.balance(&client_b.address), 300_000);
+
+    let r_b1 = Address::generate(&env);
+    let r_b2 = Address::generate(&env);
+    client_b.batch_payout(&vec![&env, r_b1.clone(), r_b2.clone()], &vec![&env, 50_000, 25_000]);
+
+    // Payout in token B should not affect token A accounting.
+    assert_eq!(client_a.get_remaining_balance(), 380_000);
+    assert_eq!(client_b.get_remaining_balance(), 225_000);
+    assert_eq!(token_client_a.balance(&client_a.address), 380_000);
+    assert_eq!(token_client_b.balance(&client_b.address), 225_000);
+}
+
+#[test]
 fn test_anti_abuse_whitelist_bypass() {
     let env = Env::default();
     let lock_amount = 100_000_000_000i128;

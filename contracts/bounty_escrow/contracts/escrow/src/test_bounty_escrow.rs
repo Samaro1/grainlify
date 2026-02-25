@@ -294,6 +294,59 @@ fn test_integration_multi_bounty_lifecycle() {
     assert_eq!(token_client.balance(&contributor), 3_000);
 }
 
+#[test]
+fn test_multi_token_balance_accounting_isolated_across_escrow_instances() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Two escrow instances simulate simultaneous use of different tokens.
+    let contract_a = env.register_contract(None, BountyEscrowContract);
+    let contract_b = env.register_contract(None, BountyEscrowContract);
+    let client_a = BountyEscrowContractClient::new(&env, &contract_a);
+    let client_b = BountyEscrowContractClient::new(&env, &contract_b);
+
+    let admin = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    let contributor = Address::generate(&env);
+    let now = env.ledger().timestamp();
+
+    let token_admin_a = Address::generate(&env);
+    let token_admin_b = Address::generate(&env);
+    let (token_a, token_client_a, token_admin_client_a) =
+        create_token_contract(&env, &token_admin_a);
+    let (token_b, token_client_b, token_admin_client_b) =
+        create_token_contract(&env, &token_admin_b);
+
+    client_a.init(&admin, &token_a);
+    client_b.init(&admin, &token_b);
+
+    token_admin_client_a.mint(&depositor, &5_000);
+    token_admin_client_b.mint(&depositor, &7_000);
+
+    client_a.lock_funds(&depositor, &11, &1_200, &(now + 120));
+    client_b.lock_funds(&depositor, &22, &3_400, &(now + 240));
+
+    // Per-token locked balances are tracked independently.
+    assert_eq!(client_a.get_balance(), 1_200);
+    assert_eq!(client_b.get_balance(), 3_400);
+    assert_eq!(token_client_a.balance(&client_a.address), 1_200);
+    assert_eq!(token_client_b.balance(&client_b.address), 3_400);
+
+    // Release only token A escrow and verify token B path is unchanged.
+    client_a.release_funds(&11, &contributor);
+
+    assert_eq!(client_a.get_balance(), 0);
+    assert_eq!(client_b.get_balance(), 3_400);
+    assert_eq!(token_client_a.balance(&contributor), 1_200);
+    assert_eq!(token_client_b.balance(&contributor), 0);
+    assert_eq!(token_client_a.balance(&client_a.address), 0);
+    assert_eq!(token_client_b.balance(&client_b.address), 3_400);
+
+    let escrow_b = client_b.get_escrow_info(&22);
+    assert_eq!(escrow_b.status, crate::EscrowStatus::Locked);
+    assert_eq!(escrow_b.remaining_amount, 3_400);
+}
+
 fn next_seed(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     *seed
