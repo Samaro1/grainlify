@@ -70,6 +70,13 @@ mod test_claim_tickets {
         assert!(result.is_ok(), "Failed to issue claim ticket");
         let ticket_id = result.unwrap();
         assert_eq!(ticket_id, 1u64, "Expected first ticket to have ID 1");
+
+        // Verify escrow is still in Locked state
+        let escrow = contract.get_escrow_info(env, bounty_id).unwrap();
+        assert_eq!(
+            escrow.status, EscrowStatus::Locked,
+            "Bounty should remain Locked after ticket issuance"
+        );
     }
 
     #[test]
@@ -275,7 +282,7 @@ mod test_claim_tickets {
 
         // Verify escrow is now released
         let escrow = contract
-            .query_escrow(env, bounty_id)
+            .get_escrow_info(env, bounty_id)
             .expect("Escrow should exist");
         assert_eq!(
             escrow.status, EscrowStatus::Released,
@@ -813,7 +820,7 @@ mod test_claim_tickets {
         // 1. Create locked bounty
         create_locked_bounty(&env, bounty_id, admin, amount, deadline);
         
-        let escrow = contract.query_escrow(env.clone(), bounty_id).unwrap();
+        let escrow = contract.get_escrow_info(env.clone(), bounty_id).unwrap();
         assert_eq!(
             escrow.status, EscrowStatus::Locked,
             "Bounty should start in Locked state"
@@ -843,7 +850,7 @@ mod test_claim_tickets {
         assert!(claim_result.is_ok(), "Claim should succeed");
 
         // 5. Verify escrow is now Released
-        let escrow = contract.query_escrow(env.clone(), bounty_id).unwrap();
+        let escrow = contract.get_escrow_info(env.clone(), bounty_id).unwrap();
         assert_eq!(
             escrow.status, EscrowStatus::Released,
             "Bounty should be Released after claim"
