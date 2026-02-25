@@ -1863,5 +1863,4 @@ mod test {
 
 // #[cfg(test)]
 // mod migration_hook_tests;
-}
 
