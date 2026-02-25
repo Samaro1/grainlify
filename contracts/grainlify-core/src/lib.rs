@@ -157,7 +157,7 @@
 #![no_std]
 
 mod multisig;
-use multisig::MultiSig;
+use multisig::{MultiSig, MultiSigConfig};
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec, String,
 };
@@ -392,6 +392,15 @@ enum DataKey {
     
     /// Previous version before migration (for rollback support)
     PreviousVersion,
+
+    /// Configuration snapshot data by snapshot id
+    ConfigSnapshot(u64),
+
+    /// Ordered list of retained snapshot ids
+    SnapshotIndex,
+
+    /// Monotonic snapshot id counter
+    SnapshotCounter,
 }
 
 // ============================================================================
@@ -412,6 +421,18 @@ enum DataKey {
 /// # Usage
 /// Set during initialization and can be updated via `set_version()`.
 const VERSION: u32 = 2;
+const CONFIG_SNAPSHOT_LIMIT: u32 = 20;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreConfigSnapshot {
+    pub id: u64,
+    pub timestamp: u64,
+    pub admin: Option<Address>,
+    pub version: u32,
+    pub previous_version: Option<u32>,
+    pub multisig_config: Option<MultiSigConfig>,
+}
 
 // ============================================================================
 // Migration System
@@ -900,6 +921,120 @@ impl GrainlifyContract {
         monitoring::emit_performance(&env, symbol_short!("set_ver"), duration);
     }
 
+    /// Creates an on-chain snapshot of critical core configuration (admin-only).
+    /// Returns snapshot id.
+    pub fn create_config_snapshot(env: Env) -> u64 {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Admin not set");
+        admin.require_auth();
+
+        let next_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SnapshotCounter)
+            .unwrap_or(0)
+            + 1;
+
+        let snapshot = CoreConfigSnapshot {
+            id: next_id,
+            timestamp: env.ledger().timestamp(),
+            admin: env.storage().instance().get(&DataKey::Admin),
+            version: env.storage().instance().get(&DataKey::Version).unwrap_or(0),
+            previous_version: env.storage().instance().get(&DataKey::PreviousVersion),
+            multisig_config: MultiSig::get_config_opt(&env),
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ConfigSnapshot(next_id), &snapshot);
+
+        let mut index: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SnapshotIndex)
+            .unwrap_or(Vec::new(&env));
+        index.push_back(next_id);
+
+        if index.len() > CONFIG_SNAPSHOT_LIMIT {
+            let oldest_snapshot_id = index.get(0).unwrap();
+            env.storage()
+                .instance()
+                .remove(&DataKey::ConfigSnapshot(oldest_snapshot_id));
+
+            let mut trimmed = Vec::new(&env);
+            for i in 1..index.len() {
+                trimmed.push_back(index.get(i).unwrap());
+            }
+            index = trimmed;
+        }
+
+        env.storage().instance().set(&DataKey::SnapshotIndex, &index);
+        env.storage().instance().set(&DataKey::SnapshotCounter, &next_id);
+
+        env.events().publish(
+            (symbol_short!("cfg_snap"), symbol_short!("create")),
+            (next_id, snapshot.timestamp),
+        );
+
+        next_id
+    }
+
+    /// Lists retained core configuration snapshots in chronological order.
+    pub fn list_config_snapshots(env: Env) -> Vec<CoreConfigSnapshot> {
+        let index: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SnapshotIndex)
+            .unwrap_or(Vec::new(&env));
+
+        let mut snapshots = Vec::new(&env);
+        for snapshot_id in index.iter() {
+            if let Some(snapshot) = env
+                .storage()
+                .instance()
+                .get(&DataKey::ConfigSnapshot(snapshot_id))
+            {
+                snapshots.push_back(snapshot);
+            }
+        }
+
+        snapshots
+    }
+
+    /// Restores core configuration from a previously captured snapshot (admin-only).
+    pub fn restore_config_snapshot(env: Env, snapshot_id: u64) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Admin not set");
+        admin.require_auth();
+
+        let snapshot: CoreConfigSnapshot = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConfigSnapshot(snapshot_id))
+            .unwrap_or_else(|| panic!("Snapshot not found"));
+
+        if let Some(snapshot_admin) = snapshot.admin {
+            env.storage().instance().set(&DataKey::Admin, &snapshot_admin);
+        } else {
+            env.storage().instance().remove(&DataKey::Admin);
+        }
+
+        env.storage().instance().set(&DataKey::Version, &snapshot.version);
+
+        match snapshot.previous_version {
+            Some(prev) => env.storage().instance().set(&DataKey::PreviousVersion, &prev),
+            None => env.storage().instance().remove(&DataKey::PreviousVersion),
+        }
+
+        match snapshot.multisig_config {
+            Some(config) => MultiSig::set_config(&env, config),
+            None => MultiSig::clear_config(&env),
+        }
+
+        env.events().publish(
+            (symbol_short!("cfg_snap"), symbol_short!("restore")),
+            (snapshot_id, env.ledger().timestamp()),
+        );
+    }
+
     // ========================================================================
     // Monitoring & Analytics Functions
     // ========================================================================
@@ -1165,6 +1300,50 @@ mod test {
 
         client.set_version(&2);
         assert_eq!(client.get_version(), 2);
+    }
+
+    #[test]
+    fn test_core_config_snapshot_create_and_restore() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+        client.set_version(&5);
+
+        let snapshot_id = client.create_config_snapshot();
+
+        client.set_version(&11);
+        assert_eq!(client.get_version(), 11);
+
+        client.restore_config_snapshot(&snapshot_id);
+        assert_eq!(client.get_version(), 5);
+    }
+
+    #[test]
+    fn test_core_config_snapshot_prunes_oldest_entries() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GrainlifyContract);
+        let client = GrainlifyContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        for version in 1..=25u32 {
+            client.set_version(&version);
+            client.create_config_snapshot();
+        }
+
+        let snapshots = client.list_config_snapshots();
+        assert_eq!(snapshots.len(), 20);
+
+        let oldest_retained = snapshots.get(0).unwrap();
+        assert_eq!(oldest_retained.id, 6);
     }
 
     #[test]

@@ -153,6 +153,7 @@ const PAYOUT: Symbol = symbol_short!("Payout");
 // Storage keys
 const PROGRAM_DATA: Symbol = symbol_short!("ProgData");
 const FEE_CONFIG: Symbol = symbol_short!("FeeCfg");
+const CONFIG_SNAPSHOT_LIMIT: u32 = 20;
 
 // Fee rate is stored in basis points (1 basis point = 0.01%)
 // Example: 100 basis points = 1%, 1000 basis points = 10%
@@ -166,6 +167,25 @@ pub struct FeeConfig {
     pub payout_fee_rate: i128,  // Fee rate for payout operations (basis points)
     pub fee_recipient: Address, // Address to receive fees
     pub fee_enabled: bool,      // Global fee enable/disable flag
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigSnapshot {
+    pub id: u64,
+    pub timestamp: u64,
+    pub fee_config: FeeConfig,
+    pub anti_abuse_config: anti_abuse::AntiAbuseConfig,
+    pub anti_abuse_admin: Option<Address>,
+    pub is_paused: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigSnapshotKey {
+    Snapshot(u64),
+    SnapshotIndex,
+    SnapshotCounter,
 }
 // ==================== MONITORING MODULE ====================
 mod monitoring {
@@ -424,6 +444,10 @@ mod anti_abuse {
 
     pub fn set_admin(env: &Env, admin: Address) {
         env.storage().instance().set(&AntiAbuseKey::Admin, &admin);
+    }
+
+    pub fn clear_admin(env: &Env) {
+        env.storage().instance().remove(&AntiAbuseKey::Admin);
     }
 
     pub fn check_rate_limit(env: &Env, address: Address) {
@@ -2025,16 +2049,8 @@ impl ProgramEscrowContract {
         fee_recipient: Option<Address>,
         fee_enabled: Option<bool>,
     ) {
-        // Verify authorization
-        let program_data: ProgramData = env
-            .storage()
-            .instance()
-            .get(&PROGRAM_DATA)
-            .unwrap_or_else(|| panic!("Program not initialized"));
-
-        // Note: In Soroban, we check authorization by requiring auth from the authorized key
-        // For this function, we'll require auth from the authorized_payout_key
-        program_data.authorized_payout_key.require_auth();
+        let admin = anti_abuse::get_admin(&env).expect("Admin not set");
+        admin.require_auth();
 
         let mut fee_config = Self::get_fee_config_internal(&env);
 
@@ -2174,6 +2190,116 @@ impl ProgramEscrowContract {
     /// Gets the current rate limit configuration.
     pub fn get_rate_limit_config(env: Env) -> anti_abuse::AntiAbuseConfig {
         anti_abuse::get_config(&env)
+    }
+
+    /// Creates an on-chain snapshot of critical configuration (admin-only).
+    /// Returns the snapshot id.
+    pub fn create_config_snapshot(env: Env) -> u64 {
+        let admin = anti_abuse::get_admin(&env).expect("Admin not set");
+        admin.require_auth();
+
+        let next_id: u64 = env
+            .storage()
+            .instance()
+            .get(&ConfigSnapshotKey::SnapshotCounter)
+            .unwrap_or(0)
+            + 1;
+
+        let snapshot = ConfigSnapshot {
+            id: next_id,
+            timestamp: env.ledger().timestamp(),
+            fee_config: Self::get_fee_config_internal(&env),
+            anti_abuse_config: anti_abuse::get_config(&env),
+            anti_abuse_admin: anti_abuse::get_admin(&env),
+            is_paused: Self::is_paused_internal(&env),
+        };
+
+        env.storage()
+            .instance()
+            .set(&ConfigSnapshotKey::Snapshot(next_id), &snapshot);
+
+        let mut index: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&ConfigSnapshotKey::SnapshotIndex)
+            .unwrap_or(vec![&env]);
+        index.push_back(next_id);
+
+        if index.len() > CONFIG_SNAPSHOT_LIMIT {
+            let oldest_snapshot_id = index.get(0).unwrap();
+            env.storage()
+                .instance()
+                .remove(&ConfigSnapshotKey::Snapshot(oldest_snapshot_id));
+
+            let mut trimmed = Vec::new(&env);
+            for i in 1..index.len() {
+                trimmed.push_back(index.get(i).unwrap());
+            }
+            index = trimmed;
+        }
+
+        env.storage()
+            .instance()
+            .set(&ConfigSnapshotKey::SnapshotIndex, &index);
+        env.storage()
+            .instance()
+            .set(&ConfigSnapshotKey::SnapshotCounter, &next_id);
+
+        env.events().publish(
+            (symbol_short!("cfg_snap"), symbol_short!("create")),
+            (next_id, snapshot.timestamp),
+        );
+
+        next_id
+    }
+
+    /// Lists retained configuration snapshots in chronological order.
+    pub fn list_config_snapshots(env: Env) -> Vec<ConfigSnapshot> {
+        let index: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&ConfigSnapshotKey::SnapshotIndex)
+            .unwrap_or(vec![&env]);
+
+        let mut snapshots = Vec::new(&env);
+        for snapshot_id in index.iter() {
+            if let Some(snapshot) = env
+                .storage()
+                .instance()
+                .get(&ConfigSnapshotKey::Snapshot(snapshot_id))
+            {
+                snapshots.push_back(snapshot);
+            }
+        }
+
+        snapshots
+    }
+
+    /// Restores contract configuration from a prior snapshot (admin-only).
+    pub fn restore_config_snapshot(env: Env, snapshot_id: u64) {
+        let admin = anti_abuse::get_admin(&env).expect("Admin not set");
+        admin.require_auth();
+
+        let snapshot: ConfigSnapshot = env
+            .storage()
+            .instance()
+            .get(&ConfigSnapshotKey::Snapshot(snapshot_id))
+            .unwrap_or_else(|| panic!("Snapshot not found"));
+
+        env.storage().instance().set(&FEE_CONFIG, &snapshot.fee_config);
+        anti_abuse::set_config(&env, snapshot.anti_abuse_config);
+
+        match snapshot.anti_abuse_admin {
+            Some(snapshot_admin) => anti_abuse::set_admin(&env, snapshot_admin),
+            None => anti_abuse::clear_admin(&env),
+        }
+
+        env.storage().instance().set(&DataKey::IsPaused, &snapshot.is_paused);
+
+        env.events().publish(
+            (symbol_short!("cfg_snap"), symbol_short!("restore")),
+            (snapshot_id, env.ledger().timestamp()),
+        );
     }
 
     // ========================================================================
@@ -3137,5 +3263,64 @@ mod test {
         assert_eq!(config.window_size, 7200);
         assert_eq!(config.max_operations, 5);
         assert_eq!(config.cooldown_period, 120);
+    }
+
+    #[test]
+    fn test_config_snapshot_create_and_restore() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, ProgramEscrowContract);
+        let client = ProgramEscrowContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.set_admin(&admin);
+
+        client.update_rate_limit_config(&7200, &5, &120);
+        client.update_fee_config(&Some(100), &Some(200), &Some(admin.clone()), &Some(true));
+        client.pause();
+
+        let snapshot_id = client.create_config_snapshot();
+
+        client.update_rate_limit_config(&3600, &1, &10);
+        client.update_fee_config(&Some(0), &Some(0), &Some(admin.clone()), &Some(false));
+        client.unpause();
+
+        client.restore_config_snapshot(&snapshot_id);
+
+        let restored_rate = client.get_rate_limit_config();
+        assert_eq!(restored_rate.window_size, 7200);
+        assert_eq!(restored_rate.max_operations, 5);
+        assert_eq!(restored_rate.cooldown_period, 120);
+
+        let restored_fee = client.get_fee_config();
+        assert_eq!(restored_fee.lock_fee_rate, 100);
+        assert_eq!(restored_fee.payout_fee_rate, 200);
+        assert!(restored_fee.fee_enabled);
+
+        assert!(client.is_paused());
+    }
+
+    #[test]
+    fn test_config_snapshot_prunes_oldest_entries() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, ProgramEscrowContract);
+        let client = ProgramEscrowContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.set_admin(&admin);
+
+        for i in 0..25u32 {
+            client.update_rate_limit_config(&(3600 + i as u64), &(10 + i), &60);
+            client.create_config_snapshot();
+        }
+
+        let snapshots = client.list_config_snapshots();
+        assert_eq!(snapshots.len(), 20);
+
+        let oldest_retained = snapshots.get(0).unwrap();
+        assert_eq!(oldest_retained.id, 6);
     }
 }
