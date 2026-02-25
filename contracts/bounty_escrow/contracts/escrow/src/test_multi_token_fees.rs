@@ -89,13 +89,25 @@ mod test_multi_token_fees {
         let config_b = client_b.get_fee_config();
 
         // Each instance has its own isolated fee configuration
-        assert_eq!(config_a.lock_fee_rate, 500, "contract_a should have 5% lock fee");
-        assert_eq!(config_a.release_fee_rate, 300, "contract_a should have 3% release fee");
+        assert_eq!(
+            config_a.lock_fee_rate, 500,
+            "contract_a should have 5% lock fee"
+        );
+        assert_eq!(
+            config_a.release_fee_rate, 300,
+            "contract_a should have 3% release fee"
+        );
         assert!(config_a.fee_enabled, "contract_a fees should be enabled");
         assert_eq!(config_a.fee_recipient, fee_recipient_a);
 
-        assert_eq!(config_b.lock_fee_rate, 100, "contract_b should have 1% lock fee");
-        assert_eq!(config_b.release_fee_rate, 200, "contract_b should have 2% release fee");
+        assert_eq!(
+            config_b.lock_fee_rate, 100,
+            "contract_b should have 1% lock fee"
+        );
+        assert_eq!(
+            config_b.release_fee_rate, 200,
+            "contract_b should have 2% release fee"
+        );
         assert!(!config_b.fee_enabled, "contract_b fees should be disabled");
         assert_eq!(config_b.fee_recipient, fee_recipient_b);
 
@@ -192,7 +204,11 @@ mod test_multi_token_fees {
             amount_a,
             "contributor_a should receive the full token_a amount"
         );
-        assert_eq!(ta_client.balance(&depositor_a), 0, "depositor_a token_a should be zero after lock");
+        assert_eq!(
+            ta_client.balance(&depositor_a),
+            0,
+            "depositor_a token_a should be zero after lock"
+        );
 
         // token_b: contributor_b gets full amount
         assert_eq!(
@@ -200,7 +216,11 @@ mod test_multi_token_fees {
             amount_b,
             "contributor_b should receive the full token_b amount"
         );
-        assert_eq!(tb_client.balance(&depositor_b), 0, "depositor_b token_b should be zero after lock");
+        assert_eq!(
+            tb_client.balance(&depositor_b),
+            0,
+            "depositor_b token_b should be zero after lock"
+        );
 
         // Verify no cross-contamination of tokens
         assert_eq!(
@@ -241,7 +261,10 @@ mod test_multi_token_fees {
         let config_b = client_b.get_fee_config();
 
         assert!(config_a.fee_enabled, "contract_a fees should be enabled");
-        assert!(!config_b.fee_enabled, "contract_b fees should remain disabled");
+        assert!(
+            !config_b.fee_enabled,
+            "contract_b fees should remain disabled"
+        );
         assert_eq!(
             config_a.release_fee_rate, 500,
             "contract_a should have 5% release fee rate"
@@ -277,8 +300,14 @@ mod test_multi_token_fees {
         let config_a = client_a.get_fee_config();
         let config_b = client_b.get_fee_config();
 
-        assert_eq!(config_a.lock_fee_rate, 300, "contract_a should store 3% lock fee");
-        assert_eq!(config_b.lock_fee_rate, 700, "contract_b should store 7% lock fee");
+        assert_eq!(
+            config_a.lock_fee_rate, 300,
+            "contract_a should store 3% lock fee"
+        );
+        assert_eq!(
+            config_b.lock_fee_rate, 700,
+            "contract_b should store 7% lock fee"
+        );
 
         // Verify they don't cross-contaminate
         assert_ne!(
