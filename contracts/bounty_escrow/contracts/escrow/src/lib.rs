@@ -1752,7 +1752,10 @@ impl BountyEscrowContract {
         }
 
         if env.storage().persistent().has(&DataKey::Escrow(bounty_id))
-            || env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id))
+            || env
+                .storage()
+                .persistent()
+                .has(&DataKey::EscrowAnon(bounty_id))
         {
             reentrancy_guard::release(&env);
             return Err(Error::BountyExists);
@@ -1880,7 +1883,11 @@ impl BountyEscrowContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::Escrow(bounty_id), &escrow);
-        } else if env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        } else if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             let mut anon: AnonymousEscrow = env
                 .storage()
                 .persistent()
@@ -1981,7 +1988,11 @@ impl BountyEscrowContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::Escrow(bounty_id), &escrow);
-        } else if env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        } else if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             let mut anon: AnonymousEscrow = env
                 .storage()
                 .persistent()
@@ -2399,30 +2410,61 @@ impl BountyEscrowContract {
             return Err(Error::InvalidAmount);
         }
 
-        // Guard: prevent overpayment — payout cannot exceed what is still owed
-        if payout_amount > escrow.remaining_amount {
-            return Err(Error::InsufficientFunds);
-        }
-
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let client = token::Client::new(&env, &token_addr);
-
-        // Transfer only the requested partial amount to the contributor
-        client.transfer(
-            &env.current_contract_address(),
-            &contributor,
-            &payout_amount,
-        );
-
-        // Decrement remaining; this is always an exact integer subtraction — no rounding
-        escrow.remaining_amount = escrow
-    .remaining_amount
-    .checked_sub(payout_amount)
-    .unwrap();
-
-        // Automatically transition to Released once fully paid out
-        if escrow.remaining_amount == 0 {
-            escrow.status = EscrowStatus::Released;
+        if env.storage().persistent().has(&DataKey::Escrow(bounty_id)) {
+            let mut escrow: Escrow = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Escrow(bounty_id))
+                .unwrap();
+            if escrow.status != EscrowStatus::Locked {
+                reentrancy_guard::release(&env);
+                return Err(Error::FundsNotLocked);
+            }
+            if payout_amount > escrow.remaining_amount {
+                reentrancy_guard::release(&env);
+                return Err(Error::InsufficientFunds);
+            }
+            escrow.remaining_amount = escrow
+                .remaining_amount
+                .checked_sub(payout_amount)
+                .unwrap();
+            if escrow.remaining_amount == 0 {
+                escrow.status = EscrowStatus::Released;
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::Escrow(bounty_id), &escrow);
+        } else if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
+            let mut anon: AnonymousEscrow = env
+                .storage()
+                .persistent()
+                .get(&DataKey::EscrowAnon(bounty_id))
+                .unwrap();
+            if anon.status != EscrowStatus::Locked {
+                reentrancy_guard::release(&env);
+                return Err(Error::FundsNotLocked);
+            }
+            if payout_amount > anon.remaining_amount {
+                reentrancy_guard::release(&env);
+                return Err(Error::InsufficientFunds);
+            }
+            anon.remaining_amount = anon
+                .remaining_amount
+                .checked_sub(payout_amount)
+                .unwrap();
+            if anon.remaining_amount == 0 {
+                anon.status = EscrowStatus::Released;
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::EscrowAnon(bounty_id), &anon);
+        } else {
+            reentrancy_guard::release(&env);
+            return Err(Error::BountyNotFound);
         }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
@@ -2472,7 +2514,11 @@ impl BountyEscrowContract {
         }
 
         // Anonymous escrows must use refund_resolved (authorized resolver provides recipient)
-        if env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             return Err(Error::AnonymousRefundRequiresResolution);
         }
 
@@ -2595,11 +2641,7 @@ impl BountyEscrowContract {
     /// Refund an anonymous escrow to a resolved recipient.
     /// Only the configured anonymous resolver can call this; they resolve the depositor
     /// commitment off-chain and pass the recipient address (signed instruction pattern).
-    pub fn refund_resolved(
-        env: Env,
-        bounty_id: u64,
-        recipient: Address,
-    ) -> Result<(), Error> {
+    pub fn refund_resolved(env: Env, bounty_id: u64, recipient: Address) -> Result<(), Error> {
         if Self::check_paused(&env, symbol_short!("refund")) {
             return Err(Error::FundsPaused);
         }
@@ -2611,7 +2653,11 @@ impl BountyEscrowContract {
             .ok_or(Error::AnonymousResolverNotSet)?;
         resolver.require_auth();
 
-        if !env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             return Err(Error::NotAnonymousEscrow);
         }
 
@@ -2628,7 +2674,11 @@ impl BountyEscrowContract {
             return Err(Error::FundsNotLocked);
         }
 
-        if env.storage().persistent().has(&DataKey::PendingClaim(bounty_id)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PendingClaim(bounty_id))
+        {
             let claim: ClaimRecord = env
                 .storage()
                 .persistent()
@@ -2691,7 +2741,11 @@ impl BountyEscrowContract {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        if env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             return Err(Error::AnonymousRefundRequiresResolution);
         }
         if !env.storage().persistent().has(&DataKey::Escrow(bounty_id)) {
@@ -2782,7 +2836,11 @@ impl BountyEscrowContract {
     /// View: get escrow info (non-anonymous escrows only).
     /// For anonymous escrows use `get_escrow_info_v2`.
     pub fn get_escrow_info(env: Env, bounty_id: u64) -> Result<Escrow, Error> {
-        if env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             return Err(Error::UseGetEscrowInfoV2ForAnonymous);
         }
         if !env.storage().persistent().has(&DataKey::Escrow(bounty_id)) {
@@ -2813,7 +2871,11 @@ impl BountyEscrowContract {
                 refund_history: escrow.refund_history,
             });
         }
-        if env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             let anon: AnonymousEscrow = env
                 .storage()
                 .persistent()
@@ -2885,7 +2947,10 @@ impl BountyEscrowContract {
         }
 
         if env.storage().persistent().has(&DataKey::Escrow(bounty_id))
-            || env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id))
+            || env
+                .storage()
+                .persistent()
+                .has(&DataKey::EscrowAnon(bounty_id))
         {
             return SimulationResult {
                 success: false,
@@ -3045,7 +3110,11 @@ impl BountyEscrowContract {
             };
         }
 
-        if env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             return SimulationResult {
                 success: false,
                 error_code: Error::AnonymousRefundRequiresResolution as u32,
@@ -4024,7 +4093,11 @@ impl BountyEscrowContract {
                 .unwrap();
             escrow_amount = escrow.amount;
             escrow_status = escrow.status;
-        } else if env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id)) {
+        } else if env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowAnon(bounty_id))
+        {
             let anon: AnonymousEscrow = env
                 .storage()
                 .persistent()
@@ -4170,7 +4243,10 @@ impl BountyEscrowContract {
 
         let bounty_id = ticket.bounty_id;
         if !env.storage().persistent().has(&DataKey::Escrow(bounty_id))
-            && !env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id))
+            && !env
+                .storage()
+                .persistent()
+                .has(&DataKey::EscrowAnon(bounty_id))
         {
             return Err(Error::BountyNotFound);
         }

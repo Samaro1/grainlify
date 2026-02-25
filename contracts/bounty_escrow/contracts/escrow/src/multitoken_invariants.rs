@@ -166,8 +166,7 @@ pub(crate) fn sum_active_escrow_balances(env: &Env) -> i128 {
             .persistent()
             .get::<DataKey, AnonymousEscrow>(&DataKey::EscrowAnon(bounty_id))
         {
-            if anon.status == EscrowStatus::Locked
-                || anon.status == EscrowStatus::PartiallyRefunded
+            if anon.status == EscrowStatus::Locked || anon.status == EscrowStatus::PartiallyRefunded
             {
                 total += anon.remaining_amount;
             }
@@ -198,7 +197,10 @@ pub(crate) fn count_orphaned_index_entries(env: &Env) -> u32 {
     let mut orphans: u32 = 0;
     for bounty_id in index.iter() {
         if !env.storage().persistent().has(&DataKey::Escrow(bounty_id))
-            && !env.storage().persistent().has(&DataKey::EscrowAnon(bounty_id))
+            && !env
+                .storage()
+                .persistent()
+                .has(&DataKey::EscrowAnon(bounty_id))
         {
             orphans += 1;
         }
