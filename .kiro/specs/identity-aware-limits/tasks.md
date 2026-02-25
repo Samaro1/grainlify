@@ -7,7 +7,7 @@
   - _Requirements: 1.1, 2.1, 6.1-6.5_
 
 - [ ] 2. Implement core identity data structures
-  - [ ] 2.1 Define IdentityClaim, IdentityTier, and AddressIdentity types
+  - [x] 2.1 Define IdentityClaim, IdentityTier, and AddressIdentity types
     - Create contracttype structs for claim and identity data
     - Implement IdentityTier enum with Unverified, Basic, Verified, Premium
     - Add DataKey variants for identity storage
@@ -17,13 +17,13 @@
     - **Property 5: Claims contain all required fields**
     - **Validates: Requirements 2.1**
 
-  - [ ] 2.3 Define TierLimits and RiskThresholds configuration structures
+  - [x] 2.3 Define TierLimits and RiskThresholds configuration structures
     - Create contracttype structs for limit configuration
     - Add storage keys for tier limits and risk thresholds
     - _Requirements: 4.1-4.5, 5.1-5.5_
 
 - [ ] 3. Implement claim serialization and signature verification
-  - [ ] 3.1 Implement claim serialization using XDR encoding
+  - [x] 3.1 Implement claim serialization using XDR encoding
     - Create deterministic serialization function for claims
     - Ensure consistent byte ordering for signature verification
     - _Requirements: 2.5_
@@ -32,7 +32,7 @@
     - **Property 9: Claim serialization round-trip consistency**
     - **Validates: Requirements 2.5**
 
-  - [ ] 3.3 Implement Ed25519 signature verification
+  - [x] 3.3 Implement Ed25519 signature verification
     - Create verify_claim_signature function
     - Verify signature against authorized issuer public key
     - _Requirements: 1.3, 2.2, 3.1_
