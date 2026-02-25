@@ -1,9 +1,12 @@
 #![cfg(test)]
 
-use crate::{BountyEscrowContract, BountyEscrowContractClient, DisputeOutcome, DisputeReason, EscrowStatus};
+use crate::{
+    BountyEscrowContract, BountyEscrowContractClient, DisputeOutcome, DisputeReason, EscrowStatus,
+};
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Events},
-    token, Address, Env, IntoVal, symbol_short,
+    token, Address, Env, IntoVal,
 };
 
 fn create_token_contract<'a>(
@@ -68,27 +71,32 @@ fn test_dispute_reason_and_outcome_tracking() {
     let now = s.env.ledger().timestamp();
     let deadline = now + 1000;
 
-    s.escrow.lock_funds(&s.depositor, &bounty_id, &amount, &deadline);
+    s.escrow
+        .lock_funds(&s.depositor, &bounty_id, &amount, &deadline);
 
     // 1. Authorize Claim with Reason: QualityIssue
-    s.escrow.authorize_claim(&bounty_id, &s.contributor, &DisputeReason::QualityIssue);
+    s.escrow
+        .authorize_claim(&bounty_id, &s.contributor, &DisputeReason::QualityIssue);
 
     let claim = s.escrow.get_pending_claim(&bounty_id);
     assert_eq!(claim.reason, DisputeReason::QualityIssue);
 
     // 2. Resolve via Payout
     s.escrow.claim(&bounty_id);
-    
+
     let info = s.escrow.get_escrow_info(&bounty_id);
     assert_eq!(info.status, EscrowStatus::Released);
 
     // 3. New Bounty: Cancel with Outcome: ResolvedByRefund
     let bounty_id_2 = 2;
-    s.escrow.lock_funds(&s.depositor, &bounty_id_2, &amount, &deadline);
-    s.escrow.authorize_claim(&bounty_id_2, &s.contributor, &DisputeReason::IncompleteWork);
-    
-    s.escrow.cancel_pending_claim(&bounty_id_2, &DisputeOutcome::ResolvedByRefund);
-    
+    s.escrow
+        .lock_funds(&s.depositor, &bounty_id_2, &amount, &deadline);
+    s.escrow
+        .authorize_claim(&bounty_id_2, &s.contributor, &DisputeReason::IncompleteWork);
+
+    s.escrow
+        .cancel_pending_claim(&bounty_id_2, &DisputeOutcome::ResolvedByRefund);
+
     let info2 = s.escrow.get_escrow_info(&bounty_id_2);
     assert_eq!(info2.status, EscrowStatus::Locked); // Cancel returns to Locked
 }
@@ -100,11 +108,13 @@ fn test_dispute_event_codes() {
     let amount = 2000;
     let deadline = s.env.ledger().timestamp() + 1000;
 
-    s.escrow.lock_funds(&s.depositor, &bounty_id, &amount, &deadline);
+    s.escrow
+        .lock_funds(&s.depositor, &bounty_id, &amount, &deadline);
 
     // Check ClaimCreated event
-    s.escrow.authorize_claim(&bounty_id, &s.contributor, &DisputeReason::ParticipantFraud);
+    s.escrow
+        .authorize_claim(&bounty_id, &s.contributor, &DisputeReason::ParticipantFraud);
 
-    // We can't easily check event data in this environment without more boilerplate, 
+    // We can't easily check event data in this environment without more boilerplate,
     // but the fact it runs means the data was correctly constructed and published.
 }
