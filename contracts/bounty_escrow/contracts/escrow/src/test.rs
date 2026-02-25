@@ -74,7 +74,7 @@ fn test_network_info_getter() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")] // AlreadyInitialized error
+#[should_panic(expected = "Error(Contract, #1)")] // AlreadyInitialized error
 fn test_cannot_reinitialize_network_config() {
     let env = Env::default();
     env.mock_all_auths();

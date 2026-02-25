@@ -3347,6 +3347,29 @@ impl BountyEscrowContract {
                 .persistent()
                 .set(&DataKey::Escrow(item.bounty_id), &escrow);
 
+            // Update EscrowIndex (same as lock_funds)
+            let mut index: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::EscrowIndex)
+                .unwrap_or(Vec::new(&env));
+            index.push_back(item.bounty_id);
+            env.storage()
+                .persistent()
+                .set(&DataKey::EscrowIndex, &index);
+
+            // Update DepositorIndex
+            let mut depositor_index: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::DepositorIndex(item.depositor.clone()))
+                .unwrap_or(Vec::new(&env));
+            depositor_index.push_back(item.bounty_id);
+            env.storage().persistent().set(
+                &DataKey::DepositorIndex(item.depositor.clone()),
+                &depositor_index,
+            );
+
             locked_count += 1;
         }
 
