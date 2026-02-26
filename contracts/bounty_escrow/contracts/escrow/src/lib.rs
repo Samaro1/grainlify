@@ -4963,3 +4963,6 @@ mod test_e2e_upgrade_with_pause;
 mod test_query_filters;
 #[cfg(test)]
 mod test_status_transitions;
+
+#[cfg(test)]
+mod test_batch_failure_mode;
