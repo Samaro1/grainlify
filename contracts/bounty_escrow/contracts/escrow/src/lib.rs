@@ -22,10 +22,11 @@ mod traits;
 
 use events::{
     emit_batch_funds_locked, emit_batch_funds_released, emit_bounty_initialized, emit_funds_locked,
-    emit_funds_locked_anon, emit_funds_refunded, emit_funds_released, emit_ticket_claimed,
-    emit_ticket_issued, BatchFundsLocked, BatchFundsReleased, BountyEscrowInitialized,
-    ClaimCancelled, ClaimCreated, ClaimExecuted, FundsLocked, FundsLockedAnon, FundsRefunded,
-    FundsReleased, TicketClaimed, TicketIssued, EVENT_VERSION_V2,
+    emit_funds_locked_anon, emit_funds_refunded, emit_funds_released, emit_operation_receipt,
+    emit_ticket_claimed, emit_ticket_issued, BatchFundsLocked, BatchFundsReleased, BountyEscrowInitialized,
+    ClaimCancelled, ClaimCreated, ClaimExecuted, CriticalOperationOutcome, CriticalOperationReceipt,
+    FundsLocked, FundsLockedAnon, FundsRefunded, FundsReleased, TicketClaimed, TicketIssued,
+    EVENT_VERSION_V2,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, BytesN,
