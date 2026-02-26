@@ -23,9 +23,9 @@ mod traits;
 use events::{
     emit_batch_funds_locked, emit_batch_funds_released, emit_bounty_initialized, emit_funds_locked,
     emit_funds_locked_anon, emit_funds_refunded, emit_funds_released, emit_ticket_claimed,
-    emit_ticket_issued, BatchFundsLocked, BatchFundsReleased, BountyEscrowInitialized, ClaimCancelled,
-    ClaimCreated, ClaimExecuted, FundsLocked, FundsLockedAnon, FundsRefunded, FundsReleased,
-    TicketClaimed, TicketIssued, EVENT_VERSION_V2,
+    emit_ticket_issued, BatchFundsLocked, BatchFundsReleased, BountyEscrowInitialized,
+    ClaimCancelled, ClaimCreated, ClaimExecuted, FundsLocked, FundsLockedAnon, FundsRefunded,
+    FundsReleased, TicketClaimed, TicketIssued, EVENT_VERSION_V2,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, BytesN,
@@ -500,7 +500,7 @@ pub struct EscrowInfo {
 pub enum DataKey {
     Admin,
     Token,
-    Escrow(u64),    // bounty_id
+    Escrow(u64),     // bounty_id
     EscrowAnon(u64), // bounty_id -> AnonymousEscrow (optional anonymization)
     Metadata(u64),
     EscrowIndex,             // Vec<u64> of all bounty_ids
