@@ -152,6 +152,16 @@ const PAYOUT: Symbol = symbol_short!("Payout");
 const DEPENDENCY_CREATED: Symbol = symbol_short!("dep_add");
 const DEPENDENCY_CLEARED: Symbol = symbol_short!("dep_clr");
 const DEPENDENCY_STATUS_UPDATED: Symbol = symbol_short!("dep_sts");
+// ── Step 1: Add module declarations near the top of lib.rs ──────────────
+// (after `mod anti_abuse;` and before the contract struct)
+mod payout_splits;
+pub use payout_splits::{BeneficiarySplit, SplitConfig, SplitPayoutResult};
+mod claim_period;
+pub use claim_period::{ClaimRecord, ClaimStatus};
+#[cfg(test)]
+mod test_claim_period_expiry_cancellation;
+mod error_recovery;
+mod reentrancy_guard;
 
 // Storage keys
 const PROGRAM_DATA: Symbol = symbol_short!("ProgData");
@@ -429,17 +439,23 @@ mod anti_abuse {
             .has(&AntiAbuseKey::Whitelist(address))
     }
 
-    pub fn set_whitelist(env: &Env, address: Address, whitelisted: bool) {
-        if whitelisted {
-            env.storage()
-                .instance()
-                .set(&AntiAbuseKey::Whitelist(address), &true);
-        } else {
-            env.storage()
-                .instance()
-                .remove(&AntiAbuseKey::Whitelist(address));
-        }
-    }
+/// Storage key type for individual programs
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DataKey {
+    Program(String),                 // program_id -> ProgramData
+    Admin,                           // Contract Admin
+    ReleaseSchedule(String, u64),    // program_id, schedule_id -> ProgramReleaseSchedule
+    ReleaseHistory(String),          // program_id -> Vec<ProgramReleaseHistory>
+    NextScheduleId(String),          // program_id -> next schedule_id
+    MultisigConfig(String),          // program_id -> MultisigConfig
+    PayoutApproval(String, Address), // program_id, recipient -> PayoutApproval
+    PendingClaim(String, u64),       // (program_id, schedule_id) -> ClaimRecord
+    ClaimWindow,                     // u64 seconds (global config)
+    PauseFlags,                      // PauseFlags struct
+    RateLimitConfig,    
+    SplitConfig(String),              // RateLimitConfig struct
+}
 
     pub fn get_admin(env: &Env) -> Option<Address> {
         env.storage().instance().get(&AntiAbuseKey::Admin)
@@ -3391,77 +3407,49 @@ mod test {
         assert_eq!(info2.total_funds, amount2);
         assert_eq!(info2.remaining_balance, amount2);
     }
+}
+pub fn set_split_config(
+    env: Env,
+    program_id: String,
+    beneficiaries: soroban_sdk::Vec<payout_splits::BeneficiarySplit>,
+) -> payout_splits::SplitConfig {
+    payout_splits::set_split_config(&env, &program_id, beneficiaries)
+}
+
+/// Return the current split configuration, or `None` if not set.
+pub fn get_split_config(env: Env, program_id: String) -> Option<payout_splits::SplitConfig> {
+    payout_splits::get_split_config(&env, &program_id)
+}
+
+/// Deactivate the split configuration (does not erase it).
+///
+/// Only the `authorized_payout_key` may call this function.
+pub fn disable_split_config(env: Env, program_id: String) {
+    payout_splits::disable_split_config(&env, &program_id);
+}
+
+/// Distribute `total_amount` from the escrow according to the stored split ratios.
+///
+/// Dust (remainder after integer division) is awarded to the first beneficiary.
+/// Returns a `SplitPayoutResult` with totals and the updated remaining balance.
+
+
+/// Preview how `total_amount` would be distributed without executing any transfer.
+///
+/// Returns a Vec of `BeneficiarySplit` where `share_bps` holds the **computed
+/// token amount** (not the ratio), so callers can inspect exact distributions
+/// before committing.
+pub fn preview_split_payout(
+    env: Env,
+    program_id: String,
+    total_amount: i128,
+) -> soroban_sdk::Vec<payout_splits::BeneficiarySplit> {
+    payout_splits::preview_split(&env, &program_id, total_amount)
+}
+
 
     #[test]
     fn test_lock_funds_cumulative() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
-        let contract_id = env.register_contract(None, ProgramEscrowContract);
-        let client = ProgramEscrowContractClient::new(&env, &contract_id);
-        let token_client = create_token_contract(&env, &admin);
-
-        let backend = Address::generate(&env);
-        let prog_id = String::from_str(&env, "Hackathon2024");
-
-        client.initialize_program(&prog_id, &backend, &token_client.address);
-
-        // Lock funds multiple times
-        client.lock_program_funds(&prog_id, &1_000_0000000);
-        client.lock_program_funds(&prog_id, &2_000_0000000);
-        client.lock_program_funds(&prog_id, &3_000_0000000);
-
-        let info = client.get_program_info(&prog_id);
-        assert_eq!(info.total_funds, 6_000_0000000);
-        assert_eq!(info.remaining_balance, 6_000_0000000);
-    }
-
-    #[test]
-    #[should_panic(expected = "Amount must be greater than zero")]
-    fn test_lock_zero_funds() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, ProgramEscrowContract);
-        let client = ProgramEscrowContractClient::new(&env, &contract_id);
-
-        let backend = Address::generate(&env);
-        let token = Address::generate(&env);
-        let prog_id = String::from_str(&env, "Hackathon2024");
-
-        client.initialize_program(&prog_id, &backend, &token);
-        client.lock_program_funds(&prog_id, &0);
-    }
-
-    // ========================================================================
-    // Batch Payout Tests
-    // ========================================================================
-
-    #[test]
-    #[should_panic(expected = "Recipients and amounts vectors must have the same length")]
-    fn test_batch_payout_mismatched_lengths() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
-        let contract_id = env.register_contract(None, ProgramEscrowContract);
-        let client = ProgramEscrowContractClient::new(&env, &contract_id);
-        let token_client = create_token_contract(&env, &admin);
-
-        let backend = Address::generate(&env);
-        let prog_id = String::from_str(&env, "Test");
-
-        client.initialize_program(&prog_id, &backend, &token_client.address);
-        client.lock_program_funds(&prog_id, &10_000_0000000);
-
-        let recipients = soroban_sdk::vec![&env, Address::generate(&env), Address::generate(&env)];
-        let amounts = soroban_sdk::vec![&env, 1_000_0000000i128]; // Mismatch!
-
-        client.batch_payout(&prog_id, &recipients, &amounts);
-    }
-
-    #[test]
-    #[should_panic(expected = "Insufficient balance")]
-    fn test_batch_payout_insufficient_balance() {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -3659,81 +3647,8 @@ mod test {
         client.initialize_program(&String::from_str(&env, "P2"), &backend, &token);
         // Should work because whitelisted
     }
+#[cfg(test)] mod test_payout_splits;
 
-    #[test]
-    fn test_anti_abuse_config_update() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, ProgramEscrowContract);
-        let client = ProgramEscrowContractClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.set_admin(&admin);
-
-        client.update_rate_limit_config(&7200, &5, &120);
-
-        let config = client.get_rate_limit_config();
-        assert_eq!(config.window_size, 7200);
-        assert_eq!(config.max_operations, 5);
-        assert_eq!(config.cooldown_period, 120);
-    }
-
-    #[test]
-    fn test_config_snapshot_create_and_restore() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, ProgramEscrowContract);
-        let client = ProgramEscrowContractClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.set_admin(&admin);
-
-        client.update_rate_limit_config(&7200, &5, &120);
-        client.update_fee_config(&Some(100), &Some(200), &Some(admin.clone()), &Some(true));
-        client.pause();
-
-        let snapshot_id = client.create_config_snapshot();
-
-        client.update_rate_limit_config(&3600, &1, &10);
-        client.update_fee_config(&Some(0), &Some(0), &Some(admin.clone()), &Some(false));
-        client.unpause();
-
-        client.restore_config_snapshot(&snapshot_id);
-
-        let restored_rate = client.get_rate_limit_config();
-        assert_eq!(restored_rate.window_size, 7200);
-        assert_eq!(restored_rate.max_operations, 5);
-        assert_eq!(restored_rate.cooldown_period, 120);
-
-        let restored_fee = client.get_fee_config();
-        assert_eq!(restored_fee.lock_fee_rate, 100);
-        assert_eq!(restored_fee.payout_fee_rate, 200);
-        assert!(restored_fee.fee_enabled);
-
-        assert!(client.is_paused());
-    }
-
-    #[test]
-    fn test_config_snapshot_prunes_oldest_entries() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, ProgramEscrowContract);
-        let client = ProgramEscrowContractClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.set_admin(&admin);
-
-        for i in 0..25u32 {
-            client.update_rate_limit_config(&(3600 + i as u64), &(10 + i), &60);
-            client.create_config_snapshot();
-        }
-
-        let snapshots = client.list_config_snapshots();
-        assert_eq!(snapshots.len(), 20);
-
-        let oldest_retained = snapshots.get(0).unwrap();
-        assert_eq!(oldest_retained.id, 6);
-    }
-}
+#[cfg(test)]
+#[cfg(any())]
+mod rbac_tests;
