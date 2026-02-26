@@ -19,6 +19,18 @@ fn setup_token(env: &Env, admin: &Address) -> Address {
 
 // No lifetime on the struct: token clients are created on demand from self.env.
 struct TestContext {
+fn create_token_contract<'a>(
+    e: &'a Env,
+    admin: &Address,
+) -> (Address, token::Client<'a>, token::StellarAssetClient<'a>) {
+    let token_contract = e.register_stellar_asset_contract_v2(admin.clone());
+    let token = token_contract.address();
+    let token_client = token::Client::new(e, &token);
+    let token_admin_client = token::StellarAssetClient::new(e, &token);
+    (token, token_client, token_admin_client)
+}
+
+struct TestContext<'a> {
     env: Env,
     client: BountyEscrowContractClient<'static>,
     token_addr: Address,

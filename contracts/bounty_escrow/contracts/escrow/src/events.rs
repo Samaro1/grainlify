@@ -63,6 +63,44 @@ pub fn emit_funds_released(env: &Env, event: FundsReleased) {
     env.events().publish(topics, event.clone());
 }
 
+// ------------------------------------------------------------------------
+// Scheduled release events
+// ------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ScheduleCreated {
+    pub bounty_id: u64,
+    pub schedule_id: u64,
+    pub amount: i128,
+    pub recipient: Address,
+    pub release_timestamp: u64,
+    pub created_by: Address,
+    pub timestamp: u64,
+}
+
+pub fn emit_schedule_created(env: &Env, event: ScheduleCreated) {
+    let topics = (symbol_short!("sch_cr"), event.bounty_id, event.schedule_id);
+    env.events().publish(topics, event.clone());
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ScheduleReleased {
+    pub bounty_id: u64,
+    pub schedule_id: u64,
+    pub amount: i128,
+    pub recipient: Address,
+    pub released_at: u64,
+    pub released_by: Address,
+    pub release_type: crate::ReleaseType,
+}
+
+pub fn emit_schedule_released(env: &Env, event: ScheduleReleased) {
+    let topics = (symbol_short!("sch_rel"), event.bounty_id, event.schedule_id);
+    env.events().publish(topics, event.clone());
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct FundsRefunded {
@@ -127,6 +165,47 @@ pub struct FeeConfigUpdated {
 
 pub fn emit_fee_config_updated(env: &Env, event: FeeConfigUpdated) {
     let topics = (symbol_short!("fee_cfg"),);
+    env.events().publish(topics, event.clone());
+}
+
+/// Event emitted when treasury destinations are updated
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TreasuryDistributionUpdated {
+    pub destinations_count: u32,
+    pub total_weight: u32,
+    pub distribution_enabled: bool,
+    pub timestamp: u64,
+}
+
+pub fn emit_treasury_distribution_updated(env: &Env, event: TreasuryDistributionUpdated) {
+    let topics = (symbol_short!("treasury_cfg"),);
+    env.events().publish(topics, event.clone());
+}
+
+/// Event emitted when fees are distributed to treasury destinations
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TreasuryDistribution {
+    pub version: u32,
+    pub operation_type: FeeOperationType,
+    pub total_amount: i128,
+    pub distributions: Vec<TreasuryDistributionDetail>,
+    pub timestamp: u64,
+}
+
+/// Detail for a single treasury distribution
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TreasuryDistributionDetail {
+    pub destination_address: Address,
+    pub region: String,
+    pub amount: i128,
+    pub weight: u32,
+}
+
+pub fn emit_treasury_distribution(env: &Env, event: TreasuryDistribution) {
+    let topics = (symbol_short!("treasury_dist"),);
     env.events().publish(topics, event.clone());
 }
 
