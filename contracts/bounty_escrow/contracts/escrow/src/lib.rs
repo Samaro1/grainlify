@@ -382,6 +382,21 @@ mod anti_abuse {
 
     #[contracttype]
     #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct GlobalConfig {
+        pub window_size: u64,    // Window size in seconds
+        pub max_operations: u64, // Max operations allowed in window (0==disabled)
+        pub enabled: bool,       // Toggle global limiting
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct GlobalState {
+        pub window_start_timestamp: u64,
+        pub operation_count: u64,
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
     pub enum AntiAbuseKey {
         Config,
         GlobalConfig,
@@ -439,7 +454,7 @@ mod anti_abuse {
         } else {
             if state.operation_count >= cfg.max_operations {
                 env.events().publish(
-                    (symbol_short!("abuse"), symbol_short!("global_limit")),
+                    (symbol_short!("abuse"), symbol_short!("g_limit")),
                     (now,),
                 );
                 panic!("Global rate limit exceeded");
