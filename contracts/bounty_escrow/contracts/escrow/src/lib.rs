@@ -1192,6 +1192,44 @@ impl BountyEscrowContract {
         Ok(())
     }
 
+    /// Admin: set or clear the anonymous resolver address used for resolving
+    /// anonymous escrow refunds. Callable only by the configured admin.
+    pub fn set_anonymous_resolver(env: Env, resolver: Option<Address>) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        if let Some(addr) = resolver {
+            env.storage().instance().set(&DataKey::AnonymousResolver, &addr);
+        } else {
+            env.storage().instance().remove(&DataKey::AnonymousResolver);
+        }
+
+        Ok(())
+    }
+
+    /// Internal helper: returns true when the escrow is locked either by the
+    /// global pause for lock operations or by a per-escrow owner lock flag.
+    fn is_escrow_locked(env: &Env, bounty_id: u64) -> bool {
+        if let Some(flags) = env
+            .storage()
+            .instance()
+            .get::<DataKey, PauseFlags>(&DataKey::PauseFlags)
+        {
+            if flags.lock_paused {
+                return true;
+            }
+        }
+
+        env.storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::EscrowLock(bounty_id))
+            .unwrap_or(false)
+    }
+
     /// Emergency withdraw all funds (admin only, must have lock_paused = true)
     ///
     /// # Reentrancy
@@ -2854,7 +2892,10 @@ impl BountyEscrowContract {
         }
 
         // EFFECTS: update state before external call
-        escrow.remaining_amount = escrow.remaining_amount.checked_sub(schedule.amount).unwrap();
+        escrow.remaining_amount = escrow
+            .remaining_amount
+            .checked_sub(schedule.amount)
+            .unwrap();
         if escrow.remaining_amount == 0 {
             escrow.status = EscrowStatus::Released;
             let now_ts = env.ledger().timestamp();
@@ -2862,12 +2903,18 @@ impl BountyEscrowContract {
                 .persistent()
                 .set(&DataKey::CompletedAt(bounty_id), &now_ts);
         }
-        env.storage().persistent().set(&DataKey::Escrow(bounty_id), &escrow);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(bounty_id), &escrow);
 
         // INTERACTION: token transfer
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(&env, &token_addr);
-        client.transfer(&env.current_contract_address(), &schedule.recipient, &schedule.amount);
+        client.transfer(
+            &env.current_contract_address(),
+            &schedule.recipient,
+            &schedule.amount,
+        );
 
         // Update schedule metadata
         schedule.released = true;
