@@ -168,6 +168,47 @@ pub fn emit_fee_config_updated(env: &Env, event: FeeConfigUpdated) {
     env.events().publish(topics, event.clone());
 }
 
+/// Event emitted when treasury destinations are updated
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TreasuryDistributionUpdated {
+    pub destinations_count: u32,
+    pub total_weight: u32,
+    pub distribution_enabled: bool,
+    pub timestamp: u64,
+}
+
+pub fn emit_treasury_distribution_updated(env: &Env, event: TreasuryDistributionUpdated) {
+    let topics = (symbol_short!("treasury_cfg"),);
+    env.events().publish(topics, event.clone());
+}
+
+/// Event emitted when fees are distributed to treasury destinations
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TreasuryDistribution {
+    pub version: u32,
+    pub operation_type: FeeOperationType,
+    pub total_amount: i128,
+    pub distributions: Vec<TreasuryDistributionDetail>,
+    pub timestamp: u64,
+}
+
+/// Detail for a single treasury distribution
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TreasuryDistributionDetail {
+    pub destination_address: Address,
+    pub region: String,
+    pub amount: i128,
+    pub weight: u32,
+}
+
+pub fn emit_treasury_distribution(env: &Env, event: TreasuryDistribution) {
+    let topics = (symbol_short!("treasury_dist"),);
+    env.events().publish(topics, event.clone());
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct BatchFundsReleased {

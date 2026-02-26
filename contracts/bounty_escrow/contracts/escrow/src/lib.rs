@@ -17,15 +17,19 @@ mod test_cross_contract_interface;
 #[cfg(test)]
 mod test_multi_token_fees;
 #[cfg(test)]
+mod test_multi_region_treasury;
+#[cfg(test)]
 mod test_rbac;
 mod traits;
 
 use events::{
     emit_batch_funds_locked, emit_batch_funds_released, emit_bounty_initialized, emit_funds_locked,
     emit_funds_locked_anon, emit_funds_refunded, emit_funds_released, emit_ticket_claimed,
-    emit_ticket_issued, BatchFundsLocked, BatchFundsReleased, BountyEscrowInitialized,
+    emit_ticket_issued, emit_treasury_distribution, emit_treasury_distribution_updated,
+    BatchFundsLocked, BatchFundsReleased, BountyEscrowInitialized,
     ClaimCancelled, ClaimCreated, ClaimExecuted, FundsLocked, FundsLockedAnon, FundsRefunded,
-    FundsReleased, TicketClaimed, TicketIssued, EVENT_VERSION_V2,
+    FundsReleased, TicketClaimed, TicketIssued, TreasuryDistribution, TreasuryDistributionDetail,
+    TreasuryDistributionUpdated, EVENT_VERSION_V2,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, BytesN,
@@ -523,6 +527,8 @@ pub enum Error {
     NotAnonymousEscrow = 36,
     /// Use get_escrow_info_v2 for anonymous escrows
     UseGetEscrowInfoV2ForAnonymous = 37,
+    /// Returned when treasury distribution configuration is invalid
+    InvalidConfig = 38,
     /// Returned when escrow is locked by owner/admin (Issue #675)
     EscrowLocked = 38,
     /// Returned when clone source not found or invalid (Issue #678)
@@ -722,6 +728,27 @@ pub struct FeeConfig {
     pub release_fee_rate: i128,
     pub fee_recipient: Address,
     pub fee_enabled: bool,
+    // Multi-region treasury distribution support
+    pub treasury_destinations: Vec<TreasuryDestination>,
+    pub distribution_enabled: bool,
+}
+
+/// Represents a single treasury destination with a weight for distribution.
+/// Weight is a u32 representing the proportion of fees to distribute (e.g., 100 = 1% if total weights = 10000)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreasuryDestination {
+    pub address: Address,
+    pub weight: u32,
+    pub region: String,
+}
+
+/// Configuration for treasury distribution
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreasuryDistributionConfig {
+    pub destinations: Vec<TreasuryDestination>,
+    pub total_weight: u32,
 }
 
 #[contracttype]
@@ -1007,6 +1034,8 @@ impl BountyEscrowContract {
                 release_fee_rate: 0,
                 fee_recipient: env.storage().instance().get(&DataKey::Admin).unwrap(),
                 fee_enabled: false,
+                treasury_destinations: vec![&env],
+                distribution_enabled: false,
             })
     }
 
@@ -1109,6 +1138,131 @@ impl BountyEscrowContract {
                 release_fee_rate: fee_config.release_fee_rate,
                 fee_recipient: fee_config.fee_recipient.clone(),
                 fee_enabled: fee_config.fee_enabled,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Update treasury distribution configuration (admin only)
+    /// This allows setting multiple treasury destinations with weights for automatic distribution
+    pub fn set_treasury_distributions(
+        env: Env,
+        destinations: Vec<TreasuryDestination>,
+        distribution_enabled: bool,
+    ) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        // Calculate total weight
+        let mut total_weight: u32 = 0;
+        for dest in &destinations {
+            total_weight = total_weight.checked_add(dest.weight).unwrap();
+        }
+
+        // Validate: if distribution is enabled, there must be at least one destination with weight > 0
+        if distribution_enabled && (destinations.is_empty() || total_weight == 0) {
+            return Err(Error::InvalidConfig);
+        }
+
+        let mut fee_config = Self::get_fee_config_internal(&env);
+        fee_config.treasury_destinations = destinations;
+        fee_config.distribution_enabled = distribution_enabled;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeConfig, &fee_config);
+
+        let total_weight = fee_config
+            .treasury_destinations
+            .iter()
+            .fold(0u32, |acc, d| acc.checked_add(d.weight).unwrap());
+
+        emit_treasury_distribution_updated(
+            &env,
+            TreasuryDistributionUpdated {
+                destinations_count: fee_config.treasury_destinations.len() as u32,
+                total_weight,
+                distribution_enabled: fee_config.distribution_enabled,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Get current treasury distribution configuration (view function)
+    pub fn get_treasury_distributions(env: Env) -> (Vec<TreasuryDestination>, bool) {
+        let fee_config = Self::get_fee_config_internal(&env);
+        (fee_config.treasury_destinations, fee_config.distribution_enabled)
+    }
+
+    /// Distribute fees to treasury destinations based on configured weights
+    /// This is an internal function that calculates and transfers fees to each destination
+    fn distribute_treasury_fees(
+        env: &Env,
+        fee_amount: i128,
+        operation_type: events::FeeOperationType,
+    ) -> Result<(), Error> {
+        let fee_config = Self::get_fee_config_internal(env);
+
+        // Skip if fees are disabled or distribution is not enabled
+        if !fee_config.fee_enabled || !fee_config.distribution_enabled {
+            return Ok(());
+        }
+
+        let destinations = fee_config.treasury_destinations;
+        if destinations.is_empty() {
+            return Ok(());
+        }
+
+        // Calculate total weight
+        let total_weight: u32 = destinations
+            .iter()
+            .fold(0u32, |acc, d| acc.checked_add(d.weight).unwrap());
+
+        if total_weight == 0 {
+            return Ok(());
+        }
+
+        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(env, &token_addr);
+        let contract_address = env.current_contract_address();
+
+        // Calculate and distribute to each destination
+        let mut distribution_details = vec![env];
+        let mut total_distributed: i128 = 0;
+
+        for dest in &destinations {
+            // Calculate proportional amount based on weight
+            let proportional_amount = (fee_amount as u128 * dest.weight as u128 / total_weight as u128) as i128;
+
+            if proportional_amount > 0 {
+                token_client.transfer(&contract_address, &dest.address, &proportional_amount);
+                total_distributed = total_distributed.checked_add(proportional_amount).unwrap();
+
+                distribution_details.push_back(TreasuryDistributionDetail {
+                    destination_address: dest.address.clone(),
+                    region: dest.region.clone(),
+                    amount: proportional_amount,
+                    weight: dest.weight,
+                });
+            }
+        }
+
+        // Emit distribution event
+        emit_treasury_distribution(
+            env,
+            TreasuryDistribution {
+                version: EVENT_VERSION_V2,
+                operation_type,
+                total_amount: fee_amount,
+                distributions: distribution_details,
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -1941,7 +2095,32 @@ impl BountyEscrowContract {
         // INTERACTION: external token transfer is last
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(&env, &token_addr);
-        client.transfer(&depositor, &env.current_contract_address(), &amount);
+
+        // Calculate lock fee if enabled
+        let fee_config = Self::get_fee_config_internal(&env);
+        let lock_fee = if fee_config.fee_enabled {
+            Self::calculate_fee(amount, fee_config.lock_fee_rate)
+        } else {
+            0
+        };
+
+        // Transfer net amount to contract (amount - fee)
+        let net_amount = amount - lock_fee;
+        client.transfer(&depositor, &env.current_contract_address(), &net_amount);
+
+        // If there's a fee and distribution is enabled, distribute to treasury destinations
+        if lock_fee > 0 && fee_config.distribution_enabled {
+            // Transfer fee to contract first (we need the fee in the contract to distribute)
+            // Actually, we should transfer fee from depositor to contract, then distribute
+            if lock_fee > 0 {
+                client.transfer(&depositor, &env.current_contract_address(), &lock_fee);
+                // Now distribute the fee to treasury destinations
+                Self::distribute_treasury_fees(&env, lock_fee, events::FeeOperationType::Lock)?;
+            }
+        } else if lock_fee > 0 && !fee_config.distribution_enabled && fee_config.fee_enabled {
+            // Legacy behavior: send fee to single fee_recipient
+            client.transfer(&env.current_contract_address(), &fee_config.fee_recipient, &lock_fee);
+        }
 
         // Emit value allows for off-chain indexing
         emit_funds_locked(
@@ -2151,11 +2330,30 @@ impl BountyEscrowContract {
         // INTERACTION: external token transfer is last
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(&env, &token_addr);
+
+        // Calculate release fee if enabled
+        let fee_config = Self::get_fee_config_internal(&env);
+        let release_fee = if fee_config.fee_enabled {
+            Self::calculate_fee(release_amount, fee_config.release_fee_rate)
+        } else {
+            0
+        };
+
+        // Transfer net amount to contributor (release_amount - fee)
+        let net_release_amount = release_amount - release_fee;
         client.transfer(
             &env.current_contract_address(),
             &contributor,
-            &release_amount,
+            &net_release_amount,
         );
+
+        // If there's a fee and distribution is enabled, distribute to treasury destinations
+        if release_fee > 0 && fee_config.distribution_enabled {
+            Self::distribute_treasury_fees(&env, release_fee, events::FeeOperationType::Release)?;
+        } else if release_fee > 0 && !fee_config.distribution_enabled && fee_config.fee_enabled {
+            // Legacy behavior: send fee to single fee_recipient
+            client.transfer(&env.current_contract_address(), &fee_config.fee_recipient, &release_fee);
+        }
 
         emit_funds_released(
             &env,
